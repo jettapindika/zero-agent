@@ -1,0 +1,29 @@
+{
+  "name": "pi-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pi-opencode": "./src/index.tsx"
+  },
+  "scripts": {
+    "dev": "tsx src/index.tsx",
+    "start": "tsx src/index.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test 'src/test/**/*.test.ts' 'src/test/**/*.test.tsx'",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ink": "^7.0.0",
+    "ink-select-input": "^6.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "@types/react": "^19.0.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0"
+  }
+}
