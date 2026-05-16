@@ -21,8 +21,8 @@ export function Sidebar({ sessions, activeSessionId, recentFiles, cwd, hasAgents
         </Text>
       ))}
       <Text color={theme.muted} bold>{"\u25B8"} Files</Text>
-      {recentFiles.slice(0, 6).map((filePath) => (
-        <Text key={filePath} color={theme.text}>  {truncateText(filePath, 18)}</Text>
+      {recentFiles.slice(0, 6).map((filePath, idx) => (
+        <Text key={`${filePath}-${idx}`} color={theme.text}>  {truncateText(filePath, 18)}</Text>
       ))}
       <Text color={theme.muted} bold>{"\u25B8"} Context</Text>
       <Text color={theme.dim}>  cwd: {truncateText(cwd, 16)}</Text>
