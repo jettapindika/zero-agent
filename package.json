@@ -1,32 +1,16 @@
 {
-  "name": "pi-opencode",
+  "name": "zero-agent",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
-  "bin": {
-    "pi-opencode": "./src/index.tsx"
-  },
+  "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "dev": "tsx src/index.tsx",
-    "start": "tsx src/index.tsx",
-    "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test 'src/test/**/*.test.ts' 'src/test/**/*.test.tsx'",
-    "build": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@earendil-works/pi-ai": "^0.74.0",
-    "@earendil-works/pi-coding-agent": "^0.74.0",
-    "ink": "^7.0.0",
-    "ink-select-input": "^6.0.0",
-    "ink-text-input": "^6.0.0",
-    "openai": "^6.38.0",
-    "react": "^19.2.0"
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "clean": "turbo clean"
   },
   "devDependencies": {
-    "@types/node": "^25.8.0",
-    "@types/react": "^19.0.0",
-    "ink-testing-library": "^4.0.0",
-    "tsx": "^4.0.0",
-    "typescript": "^5.4.0"
+    "turbo": "^2.3.0"
   }
 }

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://zero-agent.dev/config.json",
+  "type": "object",
+  "properties": {
+    "model": {
+      "type": "string",
+      "description": "Default model in provider/model format",
+      "default": "anthropic/claude-sonnet-4-5"
+    },
+    "theme": {
+      "type": "string",
+      "description": "UI theme name",
+      "default": "tokyonight"
+    }
+  }
+}

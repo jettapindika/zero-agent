@@ -1,0 +1,89 @@
+:root {
+  --bg-primary: #1a1b26;
+  --bg-secondary: #16161e;
+  --bg-tertiary: #0b0c14;
+  --fg-primary: #c0caf5;
+  --fg-secondary: #a9b1d6;
+  --fg-muted: #565f89;
+  --accent: #7aa2f7;
+  --accent-hover: #89b4fa;
+  --border: #292e42;
+  --success: #9ece6a;
+  --warning: #e0af68;
+  --error: #f7768e;
+}
+
+[data-theme="catppuccin-mocha"] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #181825;
+  --bg-tertiary: #11111b;
+  --fg-primary: #cdd6f4;
+  --fg-secondary: #bac2de;
+  --fg-muted: #6c7086;
+  --accent: #89b4fa;
+  --accent-hover: #b4befe;
+  --border: #313244;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --error: #f38ba8;
+}
+
+[data-theme="dracula"] {
+  --bg-primary: #282a36;
+  --bg-secondary: #21222c;
+  --bg-tertiary: #191a21;
+  --fg-primary: #f8f8f2;
+  --fg-secondary: #d4d4d4;
+  --fg-muted: #6272a4;
+  --accent: #bd93f9;
+  --accent-hover: #caa9fa;
+  --border: #44475a;
+  --success: #50fa7b;
+  --warning: #f1fa8c;
+  --error: #ff5555;
+}
+
+[data-theme="nord"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #272c36;
+  --bg-tertiary: #1e222a;
+  --fg-primary: #eceff4;
+  --fg-secondary: #d8dee9;
+  --fg-muted: #4c566a;
+  --accent: #88c0d0;
+  --accent-hover: #8fbcbb;
+  --border: #3b4252;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --error: #bf616a;
+}
+
+[data-theme="github-dark"] {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #010409;
+  --fg-primary: #e6edf3;
+  --fg-secondary: #c9d1d9;
+  --fg-muted: #484f58;
+  --accent: #58a6ff;
+  --accent-hover: #79c0ff;
+  --border: #30363d;
+  --success: #3fb950;
+  --warning: #d29922;
+  --error: #f85149;
+}
+
+[data-theme="rose-pine"] {
+  --bg-primary: #191724;
+  --bg-secondary: #1f1d2e;
+  --bg-tertiary: #13111e;
+  --fg-primary: #e0def4;
+  --fg-secondary: #c4a7e7;
+  --fg-muted: #6e6a86;
+  --accent: #c4a7e7;
+  --accent-hover: #ebbcba;
+  --border: #26233a;
+  --success: #9ccfd8;
+  --warning: #f6c177;
+  --error: #eb6f92;
+}
