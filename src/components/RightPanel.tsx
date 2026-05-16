@@ -5,15 +5,22 @@ import { theme } from "../theme.js";
 
 type Props = {
   toolCall: ToolCallInfo | null;
+  toolCalls?: ToolCallInfo[];
 };
 
-export function RightPanel({ toolCall }: Props) {
+export function RightPanel({ toolCall, toolCalls = toolCall ? [toolCall] : [] }: Props) {
+  const visibleTools = toolCalls.length > 0 ? toolCalls : toolCall ? [toolCall] : [];
+
   return (
     <Box width={30} flexDirection="column" borderStyle="single" borderColor={theme.border} paddingX={1} paddingY={1}>
-      <Text color={theme.muted} bold>Active Tool</Text>
-      {toolCall ? (
-        <Box marginTop={1}>
-          <ToolCall toolCall={toolCall} />
+      <Text color={theme.muted} bold>Tool Timeline</Text>
+      {visibleTools.length > 0 ? (
+        <Box marginTop={1} flexDirection="column">
+          {visibleTools.map((item) => (
+            <Box key={item.id} marginBottom={1}>
+              <ToolCall toolCall={item} />
+            </Box>
+          ))}
         </Box>
       ) : (
         <Box marginTop={1} flexDirection="column">

@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions.js";
 
 const SESSION_DIR = path.join(process.env.HOME ?? "~", ".pi-opencode", "sessions");
 
@@ -8,7 +9,22 @@ export type SavedSession = {
   title: string;
   createdAt: number;
   updatedAt: number;
-  messages: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string }>;
+  modelMessages: ChatCompletionMessageParam[];
+  uiMessages: Array<{
+    id: string;
+    role: "user" | "assistant" | "tool";
+    content: string;
+    thinking?: string;
+    toolCalls?: Array<{
+      id: string;
+      toolName: string;
+      args: Record<string, unknown>;
+      result?: string;
+      isError?: boolean;
+      durationMs?: number;
+      status: "pending" | "running" | "done" | "error";
+    }>;
+  }>;
 };
 
 async function ensureDir() {

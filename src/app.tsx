@@ -1,5 +1,7 @@
 import React from "react";
 import { Box, useInput } from "ink";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { useWindowSize } from "./hooks/useWindowSize.js";
 import { usePiSession } from "./hooks/usePiSession.js";
 import { useUIState } from "./hooks/useUIState.js";
@@ -44,6 +46,8 @@ export function App() {
   const showSidebar = columns >= 80 && ui.sidebarVisible;
   const showRightPanel = columns > 120 && ui.rightPanelVisible;
   const bodyHeight = rows - 4;
+  const cwd = process.cwd();
+  const hasAgentsFile = existsSync(join(cwd, "AGENTS.md"));
 
   const recentFiles = React.useMemo(() => {
     const paths: string[] = [];
@@ -54,6 +58,16 @@ export function App() {
       }
     }
     return paths.slice(-6);
+  }, [session.messages]);
+
+  const currentTurnTools = React.useMemo(() => {
+    for (let index = session.messages.length - 1; index >= 0; index--) {
+      const message = session.messages[index];
+      if (message?.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
+        return message.toolCalls;
+      }
+    }
+    return [];
   }, [session.messages]);
 
   useInput((input, key) => {
@@ -138,8 +152,8 @@ export function App() {
             sessions={session.sessions}
             activeSessionId={session.activeSession?.id ?? null}
             recentFiles={recentFiles}
-            cwd={process.cwd()}
-            hasAgentsFile={true}
+            cwd={cwd}
+            hasAgentsFile={hasAgentsFile}
             focused={ui.focus === "sidebar"}
             onSwitchSession={(id) => void session.switchSession(id)}
           />
@@ -151,7 +165,7 @@ export function App() {
           height={bodyHeight}
           focused={ui.focus === "chat"}
         />
-        {showRightPanel && <RightPanel toolCall={session.activeToolCall} />}
+        {showRightPanel && <RightPanel toolCall={session.activeToolCall} toolCalls={currentTurnTools} />}
       </Box>
       <Input
         onSubmit={async (text) => { ui.setScrollOffset(0); await session.prompt(text); }}
@@ -165,7 +179,7 @@ export function App() {
         latencyMs={session.latencyMs}
         isStreaming={session.isStreaming}
         elapsedMs={elapsedMs}
-        cwd={process.cwd()}
+        cwd={cwd}
       />
     </Box>
   );

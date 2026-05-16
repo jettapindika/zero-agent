@@ -3,6 +3,8 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { runAgentLoop } from "../agent/loop.js";
 import type { AgentEvent } from "../agent/loop.js";
 import { DEFAULT_MODEL, AVAILABLE_MODELS } from "../router.js";
+import { listSessions, loadSession, saveSession } from "../session/storage.js";
+import type { SavedSession } from "../session/storage.js";
 
 export type ToolCallInfo = {
   id: string;
@@ -48,6 +50,19 @@ export const PiSessionContext = createContext<PiSessionValue | null>(null);
 
 type Props = {
   children: React.ReactNode;
+  storage?: SessionStorage;
+};
+
+type SessionStorage = {
+  listSessions: () => Promise<Array<{ id: string; title: string; updatedAt: number }>>;
+  loadSession: (id: string) => Promise<SavedSession | null>;
+  saveSession: (session: SavedSession) => Promise<void>;
+};
+
+const defaultStorage: SessionStorage = {
+  listSessions,
+  loadSession,
+  saveSession,
 };
 
 const SYSTEM_PROMPT = `You are a helpful coding assistant running inside a terminal UI called pi-opencode. You have access to tools for reading, writing, editing files, running bash commands, searching with grep, and finding files with glob.
@@ -61,7 +76,7 @@ Guidelines:
 - Prefer editing existing files over writing new ones
 - When showing code, use markdown code blocks with language tags`;
 
-export function PiSessionProvider({ children }: Props) {
+export function PiSessionProvider({ children, storage = defaultStorage }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeToolCall, setActiveToolCall] = useState<ToolCallInfo | null>(null);
@@ -73,9 +88,50 @@ export function PiSessionProvider({ children }: Props) {
   const historyRef = useRef<ChatCompletionMessageParam[]>([
     { role: "system", content: SYSTEM_PROMPT }
   ]);
+  const activeSessionRef = useRef<SessionSummary | null>({ id: "default", title: "New Session" });
+  const createdAtRef = useRef<number>(Date.now());
+
+  const persistCurrentSession = useCallback(async (nextMessages: Message[], nextHistory: ChatCompletionMessageParam[]) => {
+    const session = activeSessionRef.current;
+    if (!session) return;
+    await storage.saveSession({
+      id: session.id,
+      title: session.title,
+      createdAt: createdAtRef.current,
+      updatedAt: Date.now(),
+      uiMessages: nextMessages,
+      modelMessages: nextHistory,
+    });
+  }, [storage]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    async function hydrate() {
+      const saved = await storage.listSessions();
+      if (cancelled) return;
+      if (saved.length === 0) return;
+
+      const summaries = saved.map((session) => ({ id: session.id, title: session.title }));
+      setSessions(summaries);
+      const latest = await storage.loadSession(saved[0]!.id);
+      if (cancelled || !latest) return;
+
+      const summary = { id: latest.id, title: latest.title };
+      activeSessionRef.current = summary;
+      createdAtRef.current = latest.createdAt;
+      setActiveSession(summary);
+      setMessages(latest.uiMessages);
+      historyRef.current = latest.modelMessages.length > 0 ? latest.modelMessages : [{ role: "system", content: SYSTEM_PROMPT }];
+    }
+
+    void hydrate();
+    return () => { cancelled = true; };
+  }, [storage]);
 
   const prompt = useCallback(async (text: string) => {
     const userMsg: Message = { id: `user-${Date.now()}`, role: "user", content: text };
+    const beforePromptMessages = [...messages, userMsg];
     setMessages((prev) => [...prev, userMsg]);
     historyRef.current.push({ role: "user", content: text });
 
@@ -91,6 +147,7 @@ export function PiSessionProvider({ children }: Props) {
     let firstToken = true;
     let fullContent = "";
     const toolCalls: ToolCallInfo[] = [];
+    const toolStartedAt = new Map<string, number>();
 
     const onEvent = (event: AgentEvent) => {
       switch (event.type) {
@@ -112,6 +169,7 @@ export function PiSessionProvider({ children }: Props) {
             args: event.args,
             status: "running",
           };
+          toolStartedAt.set(event.callId, Date.now());
           toolCalls.push(tc);
           setActiveToolCall(tc);
           setMessages((prev) =>
@@ -128,7 +186,7 @@ export function PiSessionProvider({ children }: Props) {
               result: event.result.output,
               isError: event.result.isError,
               status: event.result.isError ? "error" : "done",
-              durationMs: Date.now() - startTime,
+              durationMs: Date.now() - (toolStartedAt.get(event.callId) ?? startTime),
             };
           }
           const updated = toolCalls[idx] ?? null;
@@ -161,6 +219,10 @@ export function PiSessionProvider({ children }: Props) {
         onEvent,
       });
       historyRef.current = updatedHistory;
+      await persistCurrentSession(
+        [...beforePromptMessages, { id: assistantId, role: "assistant", content: fullContent, toolCalls: [...toolCalls] }],
+        updatedHistory
+      );
     } catch (err: unknown) {
       if ((err as Error).name !== "AbortError") {
         const errorMsg = (err as Error).message ?? "Unknown error";
@@ -174,7 +236,7 @@ export function PiSessionProvider({ children }: Props) {
       setIsStreaming(false);
       abortRef.current = null;
     }
-  }, [model]);
+  }, [model, messages, persistCurrentSession]);
 
   const abort = useCallback(() => {
     abortRef.current?.abort();
@@ -189,16 +251,34 @@ export function PiSessionProvider({ children }: Props) {
   }, []);
 
   const switchSession = useCallback(async (id: string) => {
-    setActiveSession(sessions.find((s) => s.id === id) ?? null);
-  }, [sessions]);
+    const loaded = await storage.loadSession(id);
+    const summary = sessions.find((s) => s.id === id) ?? (loaded ? { id: loaded.id, title: loaded.title } : null);
+    activeSessionRef.current = summary;
+    setActiveSession(summary);
+    if (!loaded) return;
+    createdAtRef.current = loaded.createdAt;
+    setMessages(loaded.uiMessages);
+    historyRef.current = loaded.modelMessages.length > 0 ? loaded.modelMessages : [{ role: "system", content: SYSTEM_PROMPT }];
+  }, [sessions, storage]);
 
   const newSession = useCallback(async () => {
+    await persistCurrentSession(messages, historyRef.current);
     const session = { id: `session-${Date.now()}`, title: `Session ${sessions.length + 1}` };
     setSessions((prev) => [...prev, session]);
     setActiveSession(session);
+    activeSessionRef.current = session;
+    createdAtRef.current = Date.now();
     setMessages([]);
     historyRef.current = [{ role: "system", content: SYSTEM_PROMPT }];
-  }, [sessions.length]);
+    await storage.saveSession({
+      id: session.id,
+      title: session.title,
+      createdAt: createdAtRef.current,
+      updatedAt: Date.now(),
+      uiMessages: [],
+      modelMessages: historyRef.current,
+    });
+  }, [messages, persistCurrentSession, sessions.length, storage]);
 
   const value = useMemo<PiSessionValue>(
     () => ({

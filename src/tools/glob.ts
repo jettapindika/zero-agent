@@ -18,25 +18,25 @@ export const globTool: ToolDefinition = {
     const searchPath = (args.path as string) || cwd;
 
     return new Promise((resolve) => {
-      execFile("find", [searchPath, "-name", pattern.replace("**/", ""), "-type", "f"], {
+      execFile("rg", ["--files", "--glob", pattern, searchPath], {
         cwd,
         timeout: 10000,
         maxBuffer: 256 * 1024,
-      }, async (error, stdout) => {
-        if (error && !stdout) {
-          try {
-            const rgArgs = ["--files", "--glob", pattern, searchPath];
-            execFile("rg", rgArgs, { cwd, timeout: 10000, maxBuffer: 256 * 1024 }, (_err, rgOut) => {
-              const files = rgOut.trim().split("\n").filter(Boolean);
-              resolve({ output: files.join("\n") || "No files found", title: `glob: ${pattern} (${files.length} files)` });
-            });
-          } catch {
-            resolve({ output: "No files found", title: `glob: ${pattern} (0 files)` });
-          }
+      }, (error, stdout) => {
+        if (!error || stdout.trim()) {
+          const files = stdout.trim().split("\n").filter(Boolean).slice(0, 100);
+          resolve({ output: files.join("\n") || "No files found", title: `glob: ${pattern} (${files.length} files)` });
           return;
         }
-        const files = stdout.trim().split("\n").filter(Boolean).slice(0, 100);
-        resolve({ output: files.join("\n") || "No files found", title: `glob: ${pattern} (${files.length} files)` });
+
+        execFile("find", [searchPath, "-type", "f", "-name", pattern.split("/").at(-1) ?? pattern], {
+          cwd,
+          timeout: 10000,
+          maxBuffer: 256 * 1024,
+        }, (_findError, findOut) => {
+          const files = findOut.trim().split("\n").filter(Boolean).slice(0, 100);
+          resolve({ output: files.join("\n") || "No files found", title: `glob: ${pattern} (${files.length} files)` });
+        });
       });
     });
   },

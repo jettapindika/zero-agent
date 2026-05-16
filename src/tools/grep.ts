@@ -10,6 +10,7 @@ export const grepTool: ToolDefinition = {
       pattern: { type: "string", description: "Regex pattern to search for" },
       path: { type: "string", description: "Directory or file to search in (default: cwd)" },
       include: { type: "string", description: "File glob pattern to include (e.g. '*.ts')" },
+      limit: { type: "number", description: "Maximum number of matches to return (default: 100)" },
     },
     required: ["pattern"],
   },
@@ -17,8 +18,9 @@ export const grepTool: ToolDefinition = {
     const pattern = args.pattern as string;
     const searchPath = (args.path as string) || cwd;
     const include = args.include as string | undefined;
+    const limit = (args.limit as number | undefined) ?? 100;
 
-    const rgArgs = ["--line-number", "--no-heading", "--color=never", "--max-count=50"];
+    const rgArgs = ["--line-number", "--no-heading", "--color=never", `--max-count=${limit}`];
     if (include) rgArgs.push("--glob", include);
     rgArgs.push(pattern, searchPath);
 
