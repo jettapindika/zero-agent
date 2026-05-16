@@ -1,5 +1,8 @@
 import React, { createContext, useCallback, useMemo, useRef, useState } from "react";
-import { client, DEFAULT_MODEL, AVAILABLE_MODELS } from "../router.js";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions.js";
+import { runAgentLoop } from "../agent/loop.js";
+import type { AgentEvent } from "../agent/loop.js";
+import { DEFAULT_MODEL, AVAILABLE_MODELS } from "../router.js";
 
 export type ToolCallInfo = {
   id: string;
@@ -8,7 +11,7 @@ export type ToolCallInfo = {
   result?: string;
   isError?: boolean;
   durationMs?: number;
-  status: "running" | "done" | "error";
+  status: "pending" | "running" | "done" | "error";
 };
 
 export type Message = {
@@ -47,22 +50,28 @@ type Props = {
   children: React.ReactNode;
 };
 
-type ChatMessage = { role: "user" | "assistant" | "system"; content: string };
+const SYSTEM_PROMPT = `You are a helpful coding assistant running inside a terminal UI called pi-opencode. You have access to tools for reading, writing, editing files, running bash commands, searching with grep, and finding files with glob.
+
+Guidelines:
+- Use tools to explore the codebase before making changes
+- Read files before editing them
+- Make minimal, focused changes
+- Run tests after making changes when possible
+- Use bash for git operations, running scripts, installing packages
+- Prefer editing existing files over writing new ones
+- When showing code, use markdown code blocks with language tags`;
 
 export function PiSessionProvider({ children }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [activeToolCall] = useState<ToolCallInfo | null>(null);
+  const [activeToolCall, setActiveToolCall] = useState<ToolCallInfo | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([{ id: "default", title: "New Session" }]);
   const [activeSession, setActiveSession] = useState<SessionSummary | null>({ id: "default", title: "New Session" });
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const historyRef = useRef<ChatMessage[]>([
-    {
-      role: "system",
-      content: "You are a helpful coding assistant running inside a terminal UI called pi-opencode. Respond conversationally and concisely. You do NOT have access to any tools — do not output tool_use XML or attempt to call functions. Just answer directly with text. Use markdown for code blocks when showing code."
-    }
+  const historyRef = useRef<ChatCompletionMessageParam[]>([
+    { role: "system", content: SYSTEM_PROMPT }
   ]);
 
   const prompt = useCallback(async (text: string) => {
@@ -71,52 +80,95 @@ export function PiSessionProvider({ children }: Props) {
     historyRef.current.push({ role: "user", content: text });
 
     const assistantId = `assistant-${Date.now()}`;
-    setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }]);
+    setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "", toolCalls: [] }]);
     setIsStreaming(true);
     setLatencyMs(null);
+    setActiveToolCall(null);
 
     const controller = new AbortController();
     abortRef.current = controller;
     const startTime = Date.now();
     let firstToken = true;
     let fullContent = "";
+    const toolCalls: ToolCallInfo[] = [];
 
-    try {
-      const stream = await client.chat.completions.create(
-        {
-          model,
-          messages: historyRef.current,
-          stream: true,
-        },
-        { signal: controller.signal }
-      );
-
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content ?? "";
-        if (delta) {
+    const onEvent = (event: AgentEvent) => {
+      switch (event.type) {
+        case "text_delta":
           if (firstToken) {
             setLatencyMs(Date.now() - startTime);
             firstToken = false;
           }
-          fullContent += delta;
+          fullContent += event.delta;
           setMessages((prev) =>
             prev.map((m) => (m.id === assistantId ? { ...m, content: fullContent } : m))
           );
-        }
-      }
+          break;
 
-      historyRef.current.push({ role: "assistant", content: fullContent });
+        case "tool_start": {
+          const tc: ToolCallInfo = {
+            id: event.callId,
+            toolName: event.toolName,
+            args: event.args,
+            status: "running",
+          };
+          toolCalls.push(tc);
+          setActiveToolCall(tc);
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, toolCalls: [...toolCalls] } : m))
+          );
+          break;
+        }
+
+        case "tool_end": {
+          const idx = toolCalls.findIndex((t) => t.id === event.callId);
+          if (idx >= 0) {
+            toolCalls[idx] = {
+              ...toolCalls[idx]!,
+              result: event.result.output,
+              isError: event.result.isError,
+              status: event.result.isError ? "error" : "done",
+              durationMs: Date.now() - startTime,
+            };
+          }
+          const updated = toolCalls[idx] ?? null;
+          setActiveToolCall(updated);
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, toolCalls: [...toolCalls] } : m))
+          );
+          break;
+        }
+
+        case "turn_end":
+          break;
+
+        case "error":
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: fullContent + `\n\n[Error: ${event.message}]` } : m
+            )
+          );
+          break;
+      }
+    };
+
+    try {
+      const updatedHistory = await runAgentLoop({
+        model,
+        messages: historyRef.current,
+        cwd: process.cwd(),
+        signal: controller.signal,
+        onEvent,
+      });
+      historyRef.current = updatedHistory;
     } catch (err: unknown) {
-      if ((err as Error).name === "AbortError") {
-        historyRef.current.push({ role: "assistant", content: fullContent + " [aborted]" });
-      } else {
+      if ((err as Error).name !== "AbortError") {
         const errorMsg = (err as Error).message ?? "Unknown error";
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantId ? { ...m, content: fullContent + `\n\n[Error: ${errorMsg}]` } : m
           )
         );
-        historyRef.current.push({ role: "assistant", content: fullContent });
       }
     } finally {
       setIsStreaming(false);
@@ -145,7 +197,7 @@ export function PiSessionProvider({ children }: Props) {
     setSessions((prev) => [...prev, session]);
     setActiveSession(session);
     setMessages([]);
-    historyRef.current = [];
+    historyRef.current = [{ role: "system", content: SYSTEM_PROMPT }];
   }, [sessions.length]);
 
   const value = useMemo<PiSessionValue>(
