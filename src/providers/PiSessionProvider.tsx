@@ -1,4 +1,5 @@
-import React, { createContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useMemo, useRef, useState } from "react";
+import { client, DEFAULT_MODEL, AVAILABLE_MODELS } from "../router.js";
 
 export type ToolCallInfo = {
   id: string;
@@ -42,144 +43,105 @@ export type PiSessionValue = {
 
 export const PiSessionContext = createContext<PiSessionValue | null>(null);
 
-type SessionLike = {
-  messages?: Array<{ id: string; role: string; content: string }>;
-  isStreaming?: boolean;
-  subscribe: (listener: (event: Record<string, unknown>) => void) => () => void;
-  prompt: (text: string) => Promise<void>;
-  abort: () => void;
-  cycleModel: () => void;
-  dispose?: () => void;
-};
-
-type SessionFactory = () => Promise<{ session: SessionLike; extensionsResult: unknown }>;
-type SessionManagerFactory = () => Promise<{ list: () => Promise<SessionSummary[]> }>;
-
 type Props = {
   children: React.ReactNode;
-  createSession?: SessionFactory;
-  createSessionManager?: SessionManagerFactory;
 };
 
-export function PiSessionProvider({ children, createSession, createSessionManager }: Props) {
+type ChatMessage = { role: "user" | "assistant" | "system"; content: string };
+
+export function PiSessionProvider({ children }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [activeToolCall, setActiveToolCall] = useState<ToolCallInfo | null>(null);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [activeSession, setActiveSession] = useState<SessionSummary | null>(null);
-  const [model, setModel] = useState("default");
-  const [thinkingLevel] = useState("default");
+  const [activeToolCall] = useState<ToolCallInfo | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[]>([{ id: "default", title: "New Session" }]);
+  const [activeSession, setActiveSession] = useState<SessionSummary | null>({ id: "default", title: "New Session" });
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
-  const sessionRef = useRef<SessionLike | null>(null);
-  const promptStartedAtRef = useRef<number | null>(null);
-  const firstDeltaAtRef = useRef<number | null>(null);
-  const toolStartedAtRef = useRef(new Map<string, number>());
+  const abortRef = useRef<AbortController | null>(null);
+  const historyRef = useRef<ChatMessage[]>([]);
 
-  useEffect(() => {
-    let unsub: (() => void) | undefined;
+  const prompt = useCallback(async (text: string) => {
+    const userMsg: Message = { id: `user-${Date.now()}`, role: "user", content: text };
+    setMessages((prev) => [...prev, userMsg]);
+    historyRef.current.push({ role: "user", content: text });
 
-    async function bootstrap() {
-      const sessionManager = createSessionManager
-        ? await createSessionManager()
-        : { list: async () => [] as SessionSummary[] };
-      setSessions(await sessionManager.list());
+    const assistantId = `assistant-${Date.now()}`;
+    setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }]);
+    setIsStreaming(true);
+    setLatencyMs(null);
 
-      if (!createSession) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const startTime = Date.now();
+    let firstToken = true;
+    let fullContent = "";
 
-      const result = await createSession();
-      sessionRef.current = result.session;
+    try {
+      const stream = await client.chat.completions.create(
+        {
+          model,
+          messages: historyRef.current,
+          stream: true,
+        },
+        { signal: controller.signal }
+      );
 
-      unsub = result.session.subscribe((event: Record<string, unknown>) => {
-        const type = event.type as string;
-
-        switch (type) {
-          case "agent_start":
-            setIsStreaming(true);
-            firstDeltaAtRef.current = null;
-            break;
-
-          case "message_start":
-            if (event.role === "assistant") {
-              setMessages((current) => [
-                ...current,
-                { id: String(event.messageId ?? `a-${Date.now()}`), role: "assistant", content: "", toolCalls: [] }
-              ]);
-            }
-            break;
-
-          case "message_update": {
-            const assistantEvent = event.assistantMessageEvent as { type?: string; delta?: string } | undefined;
-            if (assistantEvent?.type === "text_delta" && assistantEvent.delta) {
-              if (firstDeltaAtRef.current === null && promptStartedAtRef.current !== null) {
-                firstDeltaAtRef.current = Date.now();
-                setLatencyMs(firstDeltaAtRef.current - promptStartedAtRef.current);
-              }
-              const delta = assistantEvent.delta;
-              setMessages((current) => {
-                const last = current[current.length - 1];
-                if (!last || last.role !== "assistant") return current;
-                return [...current.slice(0, -1), { ...last, content: last.content + delta }];
-              });
-            }
-            break;
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content ?? "";
+        if (delta) {
+          if (firstToken) {
+            setLatencyMs(Date.now() - startTime);
+            firstToken = false;
           }
-
-          case "tool_execution_start": {
-            const toolCall: ToolCallInfo = {
-              id: String(event.toolCallId),
-              toolName: String(event.toolName),
-              args: (event.args as Record<string, unknown>) ?? {},
-              status: "running"
-            };
-            toolStartedAtRef.current.set(toolCall.id, Date.now());
-            setActiveToolCall(toolCall);
-            setMessages((current) => {
-              const lastAssistant = [...current].reverse().find((m) => m.role === "assistant");
-              if (!lastAssistant) return current;
-              return current.map((m) =>
-                m.id === lastAssistant.id
-                  ? { ...m, toolCalls: [...(m.toolCalls ?? []), toolCall] }
-                  : m
-              );
-            });
-            break;
-          }
-
-          case "tool_execution_end": {
-            const id = String(event.toolCallId);
-            const startedAt = toolStartedAtRef.current.get(id) ?? Date.now();
-            const duration = Date.now() - startedAt;
-            const status = event.isError ? "error" as const : "done" as const;
-            const result = String(event.result ?? "");
-
-            setActiveToolCall((current) =>
-              current?.id === id
-                ? { ...current, result, isError: Boolean(event.isError), durationMs: duration, status }
-                : current
-            );
-            setMessages((current) =>
-              current.map((m) => ({
-                ...m,
-                toolCalls: m.toolCalls?.map((tc) =>
-                  tc.id === id
-                    ? { ...tc, result, isError: Boolean(event.isError), durationMs: duration, status }
-                    : tc
-                )
-              }))
-            );
-            break;
-          }
-
-          case "agent_end":
-            setIsStreaming(false);
-            break;
+          fullContent += delta;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, content: fullContent } : m))
+          );
         }
-      });
-    }
+      }
 
-    void bootstrap();
-    return () => { unsub?.(); };
-  }, [createSession, createSessionManager]);
+      historyRef.current.push({ role: "assistant", content: fullContent });
+    } catch (err: unknown) {
+      if ((err as Error).name === "AbortError") {
+        historyRef.current.push({ role: "assistant", content: fullContent + " [aborted]" });
+      } else {
+        const errorMsg = (err as Error).message ?? "Unknown error";
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: fullContent + `\n\n[Error: ${errorMsg}]` } : m
+          )
+        );
+        historyRef.current.push({ role: "assistant", content: fullContent });
+      }
+    } finally {
+      setIsStreaming(false);
+      abortRef.current = null;
+    }
+  }, [model]);
+
+  const abort = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const cycleModel = useCallback(() => {
+    setModel((current) => {
+      const idx = AVAILABLE_MODELS.findIndex((m) => m.value === current);
+      const next = AVAILABLE_MODELS[(idx + 1) % AVAILABLE_MODELS.length];
+      return next?.value ?? DEFAULT_MODEL;
+    });
+  }, []);
+
+  const switchSession = useCallback(async (id: string) => {
+    setActiveSession(sessions.find((s) => s.id === id) ?? null);
+  }, [sessions]);
+
+  const newSession = useCallback(async () => {
+    const session = { id: `session-${Date.now()}`, title: `Session ${sessions.length + 1}` };
+    setSessions((prev) => [...prev, session]);
+    setActiveSession(session);
+    setMessages([]);
+    historyRef.current = [];
+  }, [sessions.length]);
 
   const value = useMemo<PiSessionValue>(
     () => ({
@@ -189,31 +151,16 @@ export function PiSessionProvider({ children, createSession, createSessionManage
       sessions,
       activeSession,
       model,
-      thinkingLevel,
+      thinkingLevel: "default",
       latencyMs,
-      async prompt(text: string) {
-        promptStartedAtRef.current = Date.now();
-        setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", content: text }]);
-        await sessionRef.current?.prompt(text);
-      },
-      abort() {
-        sessionRef.current?.abort();
-      },
-      cycleModel() {
-        sessionRef.current?.cycleModel();
-      },
-      async switchSession(id: string) {
-        setActiveSession(sessions.find((s) => s.id === id) ?? null);
-      },
-      async newSession() {
-        const session = { id: `session-${Date.now()}`, title: `Session ${sessions.length + 1}` };
-        setSessions((current) => [...current, session]);
-        setActiveSession(session);
-        setMessages([]);
-      },
-      setModel
+      prompt,
+      abort,
+      cycleModel,
+      switchSession,
+      newSession,
+      setModel,
     }),
-    [messages, isStreaming, activeToolCall, sessions, activeSession, model, thinkingLevel, latencyMs]
+    [messages, isStreaming, activeToolCall, sessions, activeSession, model, latencyMs, prompt, abort, cycleModel, switchSession, newSession]
   );
 
   return <PiSessionContext value={value}>{children}</PiSessionContext>;

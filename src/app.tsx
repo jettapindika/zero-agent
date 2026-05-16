@@ -3,6 +3,7 @@ import { Box, useInput } from "ink";
 import { useWindowSize } from "./hooks/useWindowSize.js";
 import { usePiSession } from "./hooks/usePiSession.js";
 import { useUIState } from "./hooks/useUIState.js";
+import { AVAILABLE_MODELS } from "./router.js";
 import { Header } from "./components/Header.js";
 import { Footer } from "./components/Footer.js";
 import { Sidebar } from "./components/Sidebar.js";
@@ -115,11 +116,7 @@ export function App() {
   if (ui.overlay === "model-picker") {
     return (
       <ModelPicker
-        models={[
-          { label: "claude-sonnet-4-5", value: "anthropic/claude-sonnet-4-5" },
-          { label: "claude-opus-4", value: "anthropic/claude-opus-4" },
-          { label: "gpt-4o", value: "openai/gpt-4o" },
-        ]}
+        models={AVAILABLE_MODELS.map((m) => ({ label: m.label, value: m.value }))}
         onSelect={(modelId) => session.setModel(modelId)}
         onClose={() => ui.setOverlay("none")}
       />
