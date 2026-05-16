@@ -20,7 +20,10 @@ export function toOpenAITool(tool: ToolDefinition): ChatCompletionTool {
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.parameters,
+      parameters: {
+        ...tool.parameters,
+        additionalProperties: false,
+      },
     },
   };
 }

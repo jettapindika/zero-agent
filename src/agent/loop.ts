@@ -36,16 +36,28 @@ export async function runAgentLoop(options: AgentOptions): Promise<ChatCompletio
     if (signal?.aborted) break;
     turns++;
 
-    const stream = await client.chat.completions.create(
-      {
-        model,
-        messages: history,
-        tools: OPENAI_TOOLS,
-        tool_choice: "auto",
-        stream: true,
-      },
-      { signal }
-    );
+    let stream;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        stream = await client.chat.completions.create(
+          {
+            model,
+            messages: history,
+            tools: OPENAI_TOOLS,
+            tool_choice: "auto",
+            stream: true,
+          },
+          { signal }
+        );
+        break;
+      } catch (err: unknown) {
+        if ((err as Error).name === "AbortError") throw err;
+        if (attempt === 2) throw err;
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+
+    if (!stream) break;
 
     let assistantContent = "";
     const toolCalls: FunctionToolCall[] = [];
