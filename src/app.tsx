@@ -84,6 +84,8 @@ export function App() {
 
     if (key.tab) { ui.cycleFocus(); return; }
 
+    if (ui.focus === "input") return;
+
     if (ui.focus === "chat") {
       if (key.pageDown) { ui.setScrollOffset(ui.scrollOffset + Math.floor(bodyHeight / 2)); return; }
       if (key.pageUp) { ui.setScrollOffset(Math.max(0, ui.scrollOffset - Math.floor(bodyHeight / 2))); return; }
@@ -149,6 +151,7 @@ export function App() {
         onSubmit={async (text) => { ui.setScrollOffset(999999); await session.prompt(text); }}
         onAbort={() => session.abort()}
         isStreaming={session.isStreaming}
+        focused={ui.focus === "input"}
       />
       <Footer
         tokens={tokenCount}
