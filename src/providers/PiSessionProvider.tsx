@@ -58,7 +58,12 @@ export function PiSessionProvider({ children }: Props) {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const historyRef = useRef<ChatMessage[]>([]);
+  const historyRef = useRef<ChatMessage[]>([
+    {
+      role: "system",
+      content: "You are a helpful coding assistant running inside a terminal UI called pi-opencode. Respond conversationally and concisely. You do NOT have access to any tools — do not output tool_use XML or attempt to call functions. Just answer directly with text. Use markdown for code blocks when showing code."
+    }
+  ]);
 
   const prompt = useCallback(async (text: string) => {
     const userMsg: Message = { id: `user-${Date.now()}`, role: "user", content: text };
