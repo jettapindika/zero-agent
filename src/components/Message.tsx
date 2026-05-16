@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 import type { Message as MessageType } from "../providers/PiSessionProvider.js";
+import { MarkdownText } from "./MarkdownText.js";
 import { theme } from "../theme.js";
 
 type Props = {
@@ -33,10 +34,14 @@ export function Message({ message, isStreaming = false }: Props) {
           {isUser ? "\u25A3 you" : "\u25A3 assistant"}
         </Text>
         <Box marginTop={1} flexDirection="column">
-          <Text color={theme.text} wrap="wrap">
-            {message.content}
-            {isStreaming && message.role === "assistant" ? <Text color={theme.accent}>{" \u2588"}</Text> : ""}
-          </Text>
+          {isStreaming && message.role === "assistant" ? (
+            <Text color={theme.text} wrap="wrap">
+              {message.content}
+              <Text color={theme.accent}>{" \u2588"}</Text>
+            </Text>
+          ) : (
+            <MarkdownText content={message.content} />
+          )}
         </Box>
         {message.toolCalls && message.toolCalls.length > 0 && (
           <Box marginTop={1} flexDirection="column">

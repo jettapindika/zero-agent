@@ -89,9 +89,11 @@ export function App() {
     if (ui.focus === "input") return;
 
     if (ui.focus === "chat") {
-      if (key.pageDown) { ui.setScrollOffset(ui.scrollOffset + Math.floor(bodyHeight / 2)); return; }
+      const maxScroll = Math.max(0, session.messages.length * 4 - bodyHeight);
+      if (key.pageDown) { ui.setScrollOffset(Math.min(ui.scrollOffset + Math.floor(bodyHeight / 2), maxScroll)); return; }
       if (key.pageUp) { ui.setScrollOffset(Math.max(0, ui.scrollOffset - Math.floor(bodyHeight / 2))); return; }
       if (input === "G" && key.shift) { ui.setScrollOffset(0); return; }
+      if (input === "g" && !key.shift) { ui.setScrollOffset(maxScroll); return; }
     }
   });
 
