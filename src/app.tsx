@@ -74,6 +74,8 @@ export function App() {
     if (key.ctrl && input === "n") { void session.newSession(); return; }
     if (key.ctrl && input === "p") { ui.setOverlay(ui.overlay === "session-picker" ? "none" : "session-picker"); return; }
     if (key.ctrl && input === "l") { ui.setOverlay(ui.overlay === "model-picker" ? "none" : "model-picker"); return; }
+    if (key.ctrl && input === "x") { ui.setOverlay(ui.overlay === "help" ? "none" : "help"); return; }
+    if (input === "?" && ui.focus !== "input") { ui.setOverlay(ui.overlay === "help" ? "none" : "help"); return; }
 
     if (key.ctrl && input === "c") {
       if (ctrlCPressed) { process.exit(0); }
@@ -127,7 +129,7 @@ export function App() {
 
   return (
     <Box flexDirection="column" height={rows}>
-      <Header model={session.model} mode={ui.mode} now={now} />
+      <Header model={session.model} mode={ui.mode} isStreaming={session.isStreaming} now={now} />
       <Box flexGrow={1} flexDirection="row" height={bodyHeight}>
         {showSidebar && (
           <Sidebar
@@ -137,6 +139,7 @@ export function App() {
             cwd={process.cwd()}
             hasAgentsFile={true}
             focused={ui.focus === "sidebar"}
+            onSwitchSession={(id) => void session.switchSession(id)}
           />
         )}
         <Chat
@@ -144,6 +147,7 @@ export function App() {
           scrollOffset={ui.scrollOffset}
           isStreaming={session.isStreaming}
           height={bodyHeight}
+          focused={ui.focus === "chat"}
         />
         {showRightPanel && <RightPanel toolCall={session.activeToolCall} />}
       </Box>
@@ -159,6 +163,7 @@ export function App() {
         latencyMs={session.latencyMs}
         isStreaming={session.isStreaming}
         elapsedMs={elapsedMs}
+        cwd={process.cwd()}
       />
     </Box>
   );

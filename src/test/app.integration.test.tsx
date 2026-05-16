@@ -19,8 +19,8 @@ test("Full app renders header, footer, and chat area", async () => {
 
   assert.match(frame, /opencode-pi/);
   assert.match(frame, /build/);
-  assert.match(frame, /tokens:/);
-  assert.match(frame, /\?: help/);
+  assert.match(frame, /\? help/);
+  assert.match(frame, /No messages yet/);
   assert.match(frame, /claude-opus/);
 
   app.unmount();

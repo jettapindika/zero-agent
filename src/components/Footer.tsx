@@ -7,17 +7,33 @@ type Props = {
   latencyMs: number | null;
   isStreaming: boolean;
   elapsedMs: number;
+  cwd: string;
 };
 
-export function Footer({ tokens, estimatedCost, latencyMs, isStreaming, elapsedMs }: Props) {
+export function Footer({ tokens, estimatedCost, latencyMs, isStreaming, elapsedMs, cwd }: Props) {
   const latencyText = isStreaming
-    ? `elapsed: ${(elapsedMs / 1000).toFixed(1)}s`
-    : `latency: ${((latencyMs ?? 0) / 1000).toFixed(1)}s`;
+    ? `${(elapsedMs / 1000).toFixed(1)}s`
+    : latencyMs !== null ? `${(latencyMs / 1000).toFixed(1)}s` : "-";
+
+  const shortCwd = cwd.replace(/^\/Users\/[^/]+/, "~");
 
   return (
-    <Box justifyContent="space-between" paddingX={1}>
-      <Text color={theme.muted}>{`tokens: ${tokens}  $${estimatedCost.toFixed(4)}  ${latencyText}`}</Text>
-      <Text color={theme.dim}>?: help  Ctrl+X: cmd</Text>
+    <Box justifyContent="space-between" paddingX={2}>
+      <Box gap={2}>
+        <Text color={theme.dim}>{shortCwd}</Text>
+        <Text color={theme.muted}>
+          {tokens > 0 && <Text>{tokens} tok</Text>}
+          {tokens > 0 && <Text color={theme.dim}> {"\u00B7"} </Text>}
+          {tokens > 0 && <Text>${estimatedCost.toFixed(4)}</Text>}
+          {tokens > 0 && <Text color={theme.dim}> {"\u00B7"} </Text>}
+          <Text>{isStreaming ? "elapsed" : "latency"}: {latencyText}</Text>
+        </Text>
+      </Box>
+      <Box gap={2}>
+        <Text color={theme.dim}>? help</Text>
+        <Text color={theme.dim}>^X cmd</Text>
+        <Text color={theme.dim}>^C^C quit</Text>
+      </Box>
     </Box>
   );
 }
