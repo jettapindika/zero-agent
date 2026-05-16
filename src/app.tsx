@@ -89,7 +89,7 @@ export function App() {
     if (ui.focus === "chat") {
       if (key.pageDown) { ui.setScrollOffset(ui.scrollOffset + Math.floor(bodyHeight / 2)); return; }
       if (key.pageUp) { ui.setScrollOffset(Math.max(0, ui.scrollOffset - Math.floor(bodyHeight / 2))); return; }
-      if (input === "G" && key.shift) { ui.setScrollOffset(999999); return; }
+      if (input === "G" && key.shift) { ui.setScrollOffset(0); return; }
     }
   });
 
@@ -148,7 +148,7 @@ export function App() {
         {showRightPanel && <RightPanel toolCall={session.activeToolCall} />}
       </Box>
       <Input
-        onSubmit={async (text) => { ui.setScrollOffset(999999); await session.prompt(text); }}
+        onSubmit={async (text) => { ui.setScrollOffset(0); await session.prompt(text); }}
         onAbort={() => session.abort()}
         isStreaming={session.isStreaming}
         focused={ui.focus === "input"}
