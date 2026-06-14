@@ -36,14 +36,21 @@ func secureForRequest(r *http.Request) bool {
 	return true
 }
 
-// handleAuthStart begins the OAuth dance: mints state + PKCE, stores the
-// verifier server-side, and redirects the browser to Google.
+// handleAuthStart begins the OAuth dance: mints state + PKCE, optionally
+// binds a desktop-supplied claim token (?claim=...), stores the verifier
+// server-side, and redirects the browser to Google.
+//
+// The claim is what the Tauri webview uses to pick its own sign-in event out
+// of the bus stream — without it the desktop wouldn't know whether a
+// signed_in event belongs to its own /signin click or to a different
+// process/tab.
 func (s *Server) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	if s.auth == nil {
 		http.NotFound(w, r)
 		return
 	}
-	url, _, err := s.auth.BeginFlow()
+	claim := r.URL.Query().Get("claim")
+	url, _, err := s.auth.BeginFlow(claim)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -70,7 +77,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, user, err := s.auth.CompleteFlow(r.Context(), state, code)
+	sessionID, user, claim, err := s.auth.CompleteFlow(r.Context(), state, code)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -78,14 +85,22 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	auth.SetSessionCookie(w, sessionID, s.auth.Secret(), secureForRequest(r))
 
-	// Notify any open desktop windows so they can refetch /auth/me without
-	// polling.
-	s.bus.Publish("auth.signed_in", "", "", map[string]string{
+	// Bus event includes a sessionToken when a claim was supplied. The Tauri
+	// webview cannot read cookies the system browser set, so it picks up the
+	// signed cookie value here and sends it as Authorization: Bearer on every
+	// request — same trust as the cookie itself, scoped to the desktop's
+	// per-launch claim.
+	payload := map[string]string{
 		"userId":      user.ID,
 		"email":       user.Email,
 		"displayName": user.DisplayName,
 		"role":        user.Role,
-	})
+	}
+	if claim != "" {
+		payload["claim"] = claim
+		payload["sessionToken"] = auth.SignSessionID(sessionID, s.auth.Secret())
+	}
+	s.bus.Publish("auth.signed_in", "", "", payload)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

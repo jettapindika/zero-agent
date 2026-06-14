@@ -40,14 +40,47 @@ export type Project = {
   updatedAt: number;
 };
 
+// In-memory session token captured from the auth.signed_in SSE event.
+// Stored alongside (not replacing) cookie credentials because the system
+// browser sets cookies on its own jar; the Tauri webview can't read those.
+// Sent as Authorization: Bearer <value> on every request — daemon accepts
+// either carrier and verifies the same HMAC.
+let sessionToken: string | null = null;
+const TOKEN_STORAGE_KEY = 'zero.auth.sessionToken';
+
+try {
+  const cached = window.localStorage.getItem(TOKEN_STORAGE_KEY);
+  if (cached) sessionToken = cached;
+} catch {
+  /* localStorage unavailable; fine */
+}
+
+export function setSessionToken(token: string | null) {
+  sessionToken = token;
+  try {
+    if (token) window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    else window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getSessionToken(): string | null {
+  return sessionToken;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (sessionToken) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
+  }
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
+    headers,
   });
 
   if (!response.ok) {
@@ -185,7 +218,9 @@ export class AuthRequiredError extends Error {
 // authMe is special-cased: a 401 is the normal "not signed in" state, not an
 // error worth bubbling. Caller distinguishes via AuthRequiredError.
 export async function authMe(): Promise<AuthMeResponse> {
-  const response = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
+  const response = await fetch(`${API_BASE}/auth/me`, { credentials: 'include', headers });
   if (response.status === 401 || response.status === 404) {
     throw new AuthRequiredError();
   }
@@ -197,7 +232,10 @@ export async function authMe(): Promise<AuthMeResponse> {
 }
 
 export async function authLogout(): Promise<void> {
-  await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
+  await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include', headers });
+  setSessionToken(null);
 }
 
 export const AUTH_START_URL = `${API_BASE}/auth/google/start`;

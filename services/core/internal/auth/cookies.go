@@ -23,6 +23,11 @@ const SessionTTL = cookieMaxAge
 
 var errSignatureMismatch = errors.New("cookie signature mismatch")
 
+// SignSessionID is the exported form callers outside the package use when
+// they need the signed cookie value (e.g. to hand it to a Tauri webview that
+// can't read cookies the system browser set).
+func SignSessionID(id string, secret []byte) string { return signSessionID(id, secret) }
+
 // signSessionID returns "<id>.<base64url(hmac(secret, id))>".
 func signSessionID(id string, secret []byte) string {
 	mac := hmac.New(sha256.New, secret)
@@ -76,15 +81,29 @@ func ClearSessionCookie(w http.ResponseWriter, secure bool) {
 }
 
 // ReadSessionID extracts and verifies the session id from the request, or
-// returns the empty string when no valid cookie is present.
+// returns the empty string when no valid credential is present. Two carriers
+// are accepted, in order:
+//
+//	1. Cookie zero_auth=<signed>            (browsers, system browser flow)
+//	2. Authorization: Bearer <signed>       (Tauri webview, where cookies
+//	                                         set in the system browser are
+//	                                         not visible to fetch())
+//
+// Both carry the same signed value; same trust either way.
 func ReadSessionID(r *http.Request, secret []byte) string {
-	c, err := r.Cookie(CookieName)
-	if err != nil || c.Value == "" {
-		return ""
+	if c, err := r.Cookie(CookieName); err == nil && c.Value != "" {
+		if id, err := verifySessionID(c.Value, secret); err == nil {
+			return id
+		}
 	}
-	id, err := verifySessionID(c.Value, secret)
-	if err != nil {
-		return ""
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		raw := strings.TrimSpace(authHeader[len("Bearer "):])
+		if raw != "" {
+			if id, err := verifySessionID(raw, secret); err == nil {
+				return id
+			}
+		}
 	}
-	return id
+	return ""
 }

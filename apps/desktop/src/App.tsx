@@ -1,13 +1,16 @@
 import { Bot, Check, ChevronDown, CircleAlert, CircleCheck, Copy, FolderOpen, Loader2, Pencil, Power, Send, Trash2, X } from 'lucide-react';
 import { FormEvent, KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityPanel } from './components/ActivityPanel';
+import { FilesList } from './components/FilesList';
 import { LoginView } from './components/LoginView';
 import { ModelPickerModal } from './components/ModelPickerModal';
+import { PermissionCard } from './components/PermissionCard';
 import { SidePanel } from './components/SidePanel';
 import { SlashPreview } from './components/SlashPreview';
 import { UserChip } from './components/UserChip';
 import { MessageBody, shouldUseStructuredRenderer } from './chat/MessageBody';
 import { useActivityStream } from './activity';
+import { usePendingPermissions } from './permissions';
 import { useCurrentUser } from './auth';
 import { useQueueRunner } from './queue';
 import { parseSlashCommand, validateModelId, SLASH_HELP_TEXT } from './slash';
@@ -21,6 +24,17 @@ const DEFAULT_AGENT = 'build';
 
 function initialProjectPath() {
   return window.localStorage.getItem('zero.projectPath') || '';
+}
+
+// folderDisplayName returns just the basename of an absolute path so the
+// sidebar shows "zero-agent" instead of "/Users/mac/.../project/zero-agent".
+// Trailing slashes are tolerated. Empty input becomes a placeholder.
+function folderDisplayName(path: string): string {
+  const trimmed = path.trim().replace(/[/\\]+$/, '');
+  if (trimmed === '') return 'No folder selected';
+  const sep = trimmed.lastIndexOf('/') >= 0 ? '/' : '\\';
+  const idx = trimmed.lastIndexOf(sep);
+  return idx >= 0 && idx < trimmed.length - 1 ? trimmed.slice(idx + 1) : trimmed;
 }
 
 // App is the public entry. It gates on auth state: shows a centered LoginView
@@ -147,12 +161,35 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
     el.style.height = `${Math.min(130, el.scrollHeight)}px`;
   }, [prompt]);
 
+  // pushNotice is the single entry point for transient banners. The rules:
+  //   - Errors stack (an error is rare and worth seeing; capped to 3 below).
+  //   - Info notices NEVER stack: a new info replaces any existing info so
+  //     rapid agent cycling (Tab → plan → explore → build) shows just one
+  //     bar at a time instead of pushing the layout down.
+  //   - Duplicate of the same text is a no-op.
+  //   - Auto-dismiss: 1.6s for info (quick acknowledgment), 6s for errors.
   function pushNotice(level: 'info' | 'error', text: string) {
     const id = `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    setLocalNotices((current) => [...current, { id, level, text }]);
+    setLocalNotices((current) => {
+      // Same text already on screen — keep it; resetting would re-trigger
+      // the timer for no user benefit.
+      if (current.some((n) => n.text === text && n.level === level)) {
+        return current;
+      }
+      let next = current;
+      if (level === 'info') {
+        // Replace, not append — only one info notice visible at a time.
+        next = current.filter((n) => n.level !== 'info');
+      } else {
+        // Cap errors so a bad loop can't blow up the screen.
+        next = current.slice(-2);
+      }
+      return [...next, { id, level, text }];
+    });
+    const ttl = level === 'info' ? 1600 : 6000;
     setTimeout(() => {
       setLocalNotices((current) => current.filter((n) => n.id !== id));
-    }, 6000);
+    }, ttl);
   }
 
   const runOne = useCallback(
@@ -185,6 +222,7 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
 
   // Live activity stream (server-sent events) while sending.
   const activity = useActivityStream(activeSessionId, sending);
+  const permissions = usePendingPermissions(activeSessionId);
 
   // Auto-scroll to the newest content whenever it grows: messages list change,
   // sending toggle, local notices, activity rows, or live token stream.
@@ -288,20 +326,6 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function handleUseProject(event: FormEvent) {
-    event.preventDefault();
-    setError(null);
-    setProject(null);
-    setSessions([]);
-    setMessages([]);
-    setActiveSessionId(null);
-    try {
-      await bootstrapProject();
-    } catch (err) {
-      setError((err as Error).message);
     }
   }
 
@@ -464,12 +488,26 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
       <section className="status-grid">
         <StatusCard title="Zero server" status={server} />
         <StatusCard title="Provider" status={provider} />
-        <div className="card compact">
-          <Power size={18} />
-          <div>
-            <p className="label">Session</p>
-            <p className="value">{activeSession ? `${activeSession.agent} · ${activeSession.model}` : 'No active session'}</p>
-            <p className="detail">{project?.path ?? 'Select a project path'}</p>
+        <div className="card session-card">
+          <div className="card-stack">
+            <p className="label">
+              <Power size={11} />
+              Session
+            </p>
+            <p className="value">
+              {activeSession ? (
+                <>
+                  <span className="session-agent">{activeSession.agent}</span>
+                  <span className="session-sep">·</span>
+                  <span className="session-model">{activeSession.model}</span>
+                </>
+              ) : (
+                <span className="session-empty">No active session</span>
+              )}
+            </p>
+            <p className="detail" title={project?.path ?? ''}>
+              {project?.path ?? 'Select a project path'}
+            </p>
           </div>
         </div>
       </section>
@@ -486,21 +524,23 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
 
       <section className={showSidePanel ? 'workspace has-tasks' : 'workspace'}>
         <aside className="sessions">
-          <form className="project-form" onSubmit={handleUseProject}>
-            <label htmlFor="project-path">Project path</label>
-            <input
-              id="project-path"
-              onChange={(event) => setProjectPath(event.target.value)}
-              placeholder="/absolute/path/to/project"
-              value={projectPath}
-            />
+          <div className="project-form">
+            <label className="project-form-label">Working folder</label>
+            <div
+              aria-readonly="true"
+              className={projectPath.trim() ? 'project-folder' : 'project-folder empty'}
+              title={projectPath || 'No project selected'}
+            >
+              <FolderOpen size={14} />
+              <span className="project-folder-name">{folderDisplayName(projectPath)}</span>
+            </div>
             <div className="project-actions">
               <button disabled={!server.ok || busy} onClick={handleChooseProject} type="button">
                 <FolderOpen size={16} /> Choose folder
               </button>
-              <button disabled={!server.ok || projectPath.trim() === '' || busy} type="submit">Use project</button>
             </div>
-          </form>
+          </div>
+          <FilesList files={touchedFiles} />
           <div className="panel-header">
             <h2>Sessions</h2>
             <button type="button" onClick={handleNewSession} disabled={!project || busy}>New</button>
@@ -510,7 +550,7 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
               {!server.ok
                 ? 'Waiting for the local daemon to come online…'
                 : !project
-                  ? 'Pick a project folder above, then click "Use project".'
+                  ? 'Click "Choose folder" to pick a project.'
                   : 'No sessions yet. Click "New" to start one.'}
             </p>
           ) : null}
@@ -546,6 +586,13 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
             {messages.length === 0 ? <EmptyState server={server} provider={provider} /> : messages.map((message) => <MessageCard key={message.id} message={message} />)}
             {sending ? <ActivityPanel items={activity.items} startedAt={sendingStartedAt} /> : null}
             {sending && activity.live.text ? <LiveAssistantCard text={activity.live.text} /> : null}
+            {permissions.pending.map((req) => (
+              <PermissionCard
+                key={req.id}
+                request={req}
+                onResolve={(decision) => permissions.resolve(req.id, decision)}
+              />
+            ))}
             <div ref={messagesEndRef} />
           </div>
           {queue.queued.length > 0 || queueWarning ? (
@@ -587,8 +634,9 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
         </section>
         {showSidePanel && activeSession ? (
           <SidePanel
-            files={touchedFiles}
             isDev={isDev}
+            pending={permissions.pending}
+            onResolvePermission={permissions.resolve}
             onCancel={() => {
               if (activeSession) {
                 void cancelSession(activeSession.id).then((res) => {
@@ -626,9 +674,11 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
 function StatusCard({ title, status }: { title: string; status: StatusResponse }) {
   return (
     <div className={status.ok ? 'card ok' : 'card bad'}>
-      {status.ok ? <CircleCheck size={20} /> : <CircleAlert size={20} />}
-      <div>
-        <p className="label">{title}</p>
+      <div className="card-stack">
+        <p className="label">
+          <span className="status-dot" aria-hidden="true" />
+          {title}
+        </p>
         <p className="value">{status.ok ? 'Connected' : status.status}</p>
         {status.ok ? null : <p className="detail">{status.detail}</p>}
       </div>

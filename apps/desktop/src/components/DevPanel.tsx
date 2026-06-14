@@ -3,8 +3,22 @@
 // auth.RequireDev so non-dev callers see 403 even if they hit them directly.
 
 import { useEffect, useState } from 'react';
+import { getSessionToken } from '../zero-api';
 
 const API_BASE = 'http://127.0.0.1:8910';
+
+// authedFetch tacks the bearer token (set by useCurrentUser after the OAuth
+// dance) onto every dev-only request. Without this both /dev endpoints
+// return 401 in the Tauri webview because cookies set by the system
+// browser don't reach this origin's cookie jar.
+async function authedFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
+  const headers: Record<string, string> = {
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  const token = getSessionToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(input, { ...init, credentials: 'include', headers });
+}
 
 type RuntimeInfo = {
   goVersion?: string;
@@ -57,7 +71,7 @@ export function DevPanel() {
     let cancelled = false;
     async function fetchRuntime() {
       try {
-        const res = await fetch(`${API_BASE}/dev/runtime`, { credentials: 'include' });
+        const res = await authedFetch(`${API_BASE}/dev/runtime`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = (await res.json()) as RuntimeInfo;
         if (!cancelled) {
@@ -86,10 +100,7 @@ export function DevPanel() {
 
   async function reloadSkills() {
     try {
-      const res = await fetch(`${API_BASE}/dev/skills/reload`, {
-        method: 'POST',
-        credentials: 'include',
-      });
+      const res = await authedFetch(`${API_BASE}/dev/skills/reload`, { method: 'POST' });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       setReloadMsg('Reload signal sent.');
       window.setTimeout(() => setReloadMsg(null), 2500);

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zero-agent/core/internal/bus"
@@ -73,8 +74,19 @@ func TestLocalCORSPreflightForDesktop(t *testing.T) {
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://tauri.localhost" {
 		t.Fatalf("allow origin = %q", got)
 	}
-	if got := resp.Header.Get("Access-Control-Allow-Headers"); got == "" {
+	allowHeaders := resp.Header.Get("Access-Control-Allow-Headers")
+	if allowHeaders == "" {
 		t.Fatal("expected allowed headers")
+	}
+	// Authorization must be in the allow-list so the Tauri webview can send
+	// the bearer token alongside cookie credentials.
+	for _, want := range []string{"Authorization", "Content-Type"} {
+		if !strings.Contains(allowHeaders, want) {
+			t.Fatalf("Allow-Headers %q missing %q", allowHeaders, want)
+		}
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("Allow-Credentials = %q, want true (cookie/bearer must travel)", got)
 	}
 }
 

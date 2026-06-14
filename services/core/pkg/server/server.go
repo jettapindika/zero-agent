@@ -151,7 +151,7 @@ func localCORSMiddleware(next http.Handler) http.Handler {
 		if allowedOrigins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Zero-Client-ID")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Zero-Client-ID, Authorization")
 			// Cookies must travel from tauri.localhost to 127.0.0.1:8910 so the
 			// auth session cookie reaches the daemon on every fetch.
 			w.Header().Set("Access-Control-Allow-Credentials", "true")

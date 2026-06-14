@@ -1,13 +1,15 @@
-import { CheckCircle2, Circle, CircleDashed, FileEdit, FileText, ListTodo, Pencil, Play, ShieldAlert, Square, Wrench, X } from 'lucide-react';
+import { CheckCircle2, Circle, CircleDashed, ListTodo, Pencil, Play, ShieldAlert, Square, Wrench, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { Task } from '../tasks';
-import type { TouchedFile } from '../files';
-import { listPermissions, resolvePermission, type PermissionRequest } from '../zero-api';
+import type { PermissionDecision } from '../permissions';
+import { type PermissionRequest } from '../zero-api';
 import { DevPanel } from './DevPanel';
 
+// Files moved out to apps/desktop/src/components/FilesList.tsx and now lives
+// in the LEFT sidebar above Sessions, so the user can see touched files
+// without switching tabs over here. Tabs left: Tasks, Permissions, Run, Dev.
 const TAB_LABEL = {
   tasks: 'Tasks',
-  files: 'Files',
   perms: 'Permissions',
   run: 'Run',
   dev: 'Dev',
@@ -27,17 +29,13 @@ function taskIcon(status: Task['status']) {
   return Circle;
 }
 
-function fileIcon(ops: TouchedFile['ops']) {
-  if (ops.includes('write') || ops.includes('edit')) return FileEdit;
-  return FileText;
-}
-
 export type SidePanelProps = {
   sessionId: string | null;
   sessionModel: string | null;
   sessionAgent: string | null;
   tasks: Task[];
-  files: TouchedFile[];
+  pending: PermissionRequest[];
+  onResolvePermission: (id: string, decision: PermissionDecision) => void | Promise<void>;
   sending: boolean;
   startedAt: number;
   onCancel: () => void;
@@ -52,7 +50,8 @@ export function SidePanel({
   sessionModel,
   sessionAgent,
   tasks,
-  files,
+  pending,
+  onResolvePermission,
   sending,
   startedAt,
   onCancel,
@@ -62,31 +61,14 @@ export function SidePanel({
   isDev = false,
 }: SidePanelProps) {
   const [tab, setTab] = useState<SidePanelTab>('tasks');
-  const [pending, setPending] = useState<PermissionRequest[]>([]);
   const [now, setNow] = useState<number>(Date.now());
 
-  // Auto-switch to permissions tab when a request lands.
+  // Auto-switch to the permissions tab when a request lands. Polling lives
+  // in App.tsx via usePendingPermissions; this side effect just reacts to
+  // the array growing.
   useEffect(() => {
-    if (!sessionId) return;
-    let cancelled = false;
-    async function poll() {
-      if (!sessionId) return;
-      try {
-        const list = await listPermissions(sessionId);
-        if (cancelled) return;
-        setPending(list);
-        if (list.length > 0) setTab('perms');
-      } catch {
-        /* ignore */
-      }
-    }
-    void poll();
-    const id = window.setInterval(poll, 1500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [sessionId, sending]);
+    if (pending.length > 0) setTab('perms');
+  }, [pending.length]);
 
   // Tick the elapsed timer while sending.
   useEffect(() => {
@@ -95,14 +77,8 @@ export function SidePanel({
     return () => window.clearInterval(id);
   }, [sending]);
 
-  async function handlePermission(p: PermissionRequest, decision: 'allow_once' | 'always_allow' | 'deny') {
-    if (!sessionId) return;
-    try {
-      await resolvePermission(sessionId, p.id, decision);
-      setPending((current) => current.filter((r) => r.id !== p.id));
-    } catch {
-      /* ignore — UI will pick up state on next poll */
-    }
+  function handlePermission(p: PermissionRequest, decision: PermissionDecision) {
+    void onResolvePermission(p.id, decision);
   }
 
   const taskGroups: Record<Task['status'], Task[]> = { doing: [], todo: [], done: [] };
@@ -120,7 +96,6 @@ export function SidePanel({
           .filter((key) => key !== 'dev' || isDev)
           .map((key) => {
             const badge = key === 'tasks' ? tasks.length
-              : key === 'files' ? files.length
               : key === 'perms' ? pending.length
               : 0;
             return (
@@ -171,30 +146,6 @@ export function SidePanel({
                 </section>
               );
             })
-          )
-        ) : null}
-
-        {tab === 'files' ? (
-          files.length === 0 ? (
-            <p className="side-empty">
-              <FileText size={18} />
-              No files touched yet in this session.
-            </p>
-          ) : (
-            <ul className="file-list">
-              {files.map((file) => {
-                const Icon = fileIcon(file.ops);
-                return (
-                  <li className="file-row" key={file.path}>
-                    <Icon size={14} />
-                    <div className="file-text">
-                      <p className="file-path" title={file.path}>{file.path}</p>
-                      <p className="file-ops">{file.ops.join(' · ')}</p>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
           )
         ) : null}
 

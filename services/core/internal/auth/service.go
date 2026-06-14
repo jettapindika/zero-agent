@@ -40,8 +40,14 @@ type Service struct {
 
 // pendingFlow holds the per-request state we issue when the user clicks "Sign
 // in with Google". Keyed by the random `state` we send to Google.
+//
+// claim is an optional one-time token the desktop window generates before
+// kicking off the flow. The bus event broadcast on success echoes it back so
+// the desktop can ignore stale or unrelated sign-ins, and so we can hand the
+// session id over a public SSE stream without leaking it to other listeners.
 type pendingFlow struct {
 	verifier  string
+	claim     string
 	createdAt time.Time
 }
 
@@ -112,10 +118,10 @@ func (s *Service) IsDev(email string) bool { return IsDev(email, s.devEmails) }
 // Secret returns the cookie HMAC secret. Exposed for handler-side cookie ops.
 func (s *Service) Secret() []byte { return s.secret }
 
-// rememberFlow stores the PKCE verifier for the given state. Old entries are
-// evicted oldest-first when the map reaches maxStore — auth flows are a few
-// minutes long, this map is bounded.
-func (s *Service) rememberFlow(state, verifier string) {
+// rememberFlow stores the PKCE verifier + optional claim for the given state.
+// Old entries are evicted oldest-first when the map reaches maxStore — auth
+// flows are a few minutes long, this map is bounded.
+func (s *Service) rememberFlow(state, verifier, claim string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.pending) >= s.maxStore {
@@ -131,28 +137,29 @@ func (s *Service) rememberFlow(state, verifier string) {
 			delete(s.pending, oldestKey)
 		}
 	}
-	s.pending[state] = pendingFlow{verifier: verifier, createdAt: time.Now()}
+	s.pending[state] = pendingFlow{verifier: verifier, claim: claim, createdAt: time.Now()}
 }
 
-// consumeFlow returns the verifier for the given state and removes it. Returns
-// "" if the state is unknown or older than 10 minutes.
-func (s *Service) consumeFlow(state string) string {
+// consumeFlow returns the verifier + claim for the given state and removes
+// it. Returns ("", "") if the state is unknown or older than 10 minutes.
+func (s *Service) consumeFlow(state string) (verifier, claim string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f, ok := s.pending[state]
 	if !ok {
-		return ""
+		return "", ""
 	}
 	delete(s.pending, state)
 	if time.Since(f.createdAt) > 10*time.Minute {
-		return ""
+		return "", ""
 	}
-	return f.verifier
+	return f.verifier, f.claim
 }
 
-// BeginFlow mints a new state + PKCE pair, stores the verifier, and returns
-// the URL the caller should redirect the browser to.
-func (s *Service) BeginFlow() (authURL, state string, err error) {
+// BeginFlow mints a new state + PKCE pair, optionally binds a desktop-supplied
+// claim token, and returns the URL the caller should redirect the browser to.
+// claim may be "" when the caller doesn't need post-success notification.
+func (s *Service) BeginFlow(claim string) (authURL, state string, err error) {
 	state, err = RandomState()
 	if err != nil {
 		return "", "", err
@@ -161,28 +168,30 @@ func (s *Service) BeginFlow() (authURL, state string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	s.rememberFlow(state, pkce.Verifier)
+	s.rememberFlow(state, pkce.Verifier, claim)
 	return s.oauth.AuthURL(state, pkce), state, nil
 }
 
 // CompleteFlow finishes the OAuth dance: verifies state, exchanges code,
-// fetches userinfo, upserts the user, creates an auth_sessions row, and returns
-// the new session id ready to put in a cookie.
-func (s *Service) CompleteFlow(ctx context.Context, state, code string) (sessionID string, user *storage.User, err error) {
-	verifier := s.consumeFlow(state)
+// fetches userinfo, upserts the user, creates an auth_sessions row, and
+// returns the new session id, the user, and the claim token the desktop
+// supplied (empty string when no claim was bound).
+func (s *Service) CompleteFlow(ctx context.Context, state, code string) (sessionID string, user *storage.User, claim string, err error) {
+	verifier, savedClaim := s.consumeFlow(state)
 	if verifier == "" {
-		return "", nil, errors.New("invalid or expired state")
+		return "", nil, "", errors.New("invalid or expired state")
 	}
+	claim = savedClaim
 	if code == "" {
-		return "", nil, errors.New("missing code")
+		return "", nil, claim, errors.New("missing code")
 	}
 	tok, err := s.oauth.ExchangeCode(ctx, s.httpClient, code, verifier)
 	if err != nil {
-		return "", nil, err
+		return "", nil, claim, err
 	}
 	info, err := FetchUserInfo(ctx, s.httpClient, tok.AccessToken)
 	if err != nil {
-		return "", nil, err
+		return "", nil, claim, err
 	}
 	role := RoleFor(info.Email, s.devEmails)
 	upserted, err := s.store.UpsertUser(ctx, storage.UpsertUserInput{
@@ -193,13 +202,13 @@ func (s *Service) CompleteFlow(ctx context.Context, state, code string) (session
 		Role:        role,
 	})
 	if err != nil {
-		return "", nil, err
+		return "", nil, claim, err
 	}
 	sess, err := s.store.CreateAuthSession(ctx, upserted.ID, SessionTTL)
 	if err != nil {
-		return "", nil, err
+		return "", nil, claim, err
 	}
-	return sess.ID, upserted, nil
+	return sess.ID, upserted, claim, nil
 }
 
 // LookupSession reads + validates the cookie, and returns the live user.

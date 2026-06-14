@@ -75,8 +75,7 @@ button:disabled {
 
 .topbar,
 .status-grid,
-.workspace,
-.notice-stack {
+.workspace {
   margin: 0 auto;
   width: 100%;
 }
@@ -93,12 +92,14 @@ button:disabled {
 
 .topbar {
   align-items: center;
-  background: #141416;
-  border: 1px solid #2a2a2d;
+  background: #0f1011;
+  border: 1px solid #1f2022;
   border-radius: 10px;
   display: flex;
+  gap: 16px;
   justify-content: space-between;
-  padding: 12px 14px;
+  min-height: 56px;
+  padding: 10px 18px;
   position: sticky;
   top: 14px;
   z-index: 5;
@@ -135,8 +136,7 @@ h1 {
   margin-bottom: 0;
 }
 
-.actions,
-.status-grid {
+.actions {
   display: flex;
   gap: 10px;
 }
@@ -144,13 +144,13 @@ h1 {
 .status-grid {
   align-items: stretch;
   display: grid;
-  grid-template-columns: 1fr 1fr 0.9fr;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr 1fr;
   position: sticky;
   top: 84px;
   z-index: 4;
 }
 
-.card,
 .error,
 .sessions,
 .chat {
@@ -161,37 +161,100 @@ h1 {
 }
 
 .card {
+  align-items: center;
+  background: #131416;
+  border: 1px solid #25272a;
+  border-radius: 10px;
   display: flex;
   gap: 12px;
-  min-height: 98px;
-  padding: 14px;
+  min-height: 72px;
+  padding: 12px 16px;
 }
 
 .card.ok {
-  border-color: #3f4b42;
+  border-color: #2a3530;
 }
 
 .card.bad {
-  border-color: #584040;
+  border-color: #4a2e2e;
 }
 
-.card.ok svg {
-  color: #88b28b;
+.card-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  width: 100%;
 }
 
-.card.bad svg {
-  color: #c98282;
+.card .label {
+  align-items: center;
+  color: #8b8e91;
+  display: inline-flex;
+  font-size: 10.5px;
+  font-weight: 650;
+  gap: 6px;
+  letter-spacing: 0.1em;
+  margin: 0;
+  text-transform: uppercase;
 }
 
-.compact {
-  min-height: auto;
+.card .label svg {
+  color: #6f7370;
+  flex-shrink: 0;
+}
+
+.status-dot {
+  background: #6f7370;
+  border-radius: 50%;
+  flex-shrink: 0;
+  height: 8px;
+  width: 8px;
+}
+
+.card.ok .status-dot {
+  background: #5cc26b;
+  box-shadow: 0 0 0 3px rgba(92, 194, 107, 0.18);
+}
+
+.card.bad .status-dot {
+  background: #e06c75;
+  box-shadow: 0 0 0 3px rgba(224, 108, 117, 0.18);
 }
 
 .value {
-  color: #eeeeee;
+  color: #ededed;
   font-size: 14px;
-  font-weight: 650;
-  margin-bottom: 4px;
+  font-weight: 600;
+  margin-bottom: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-card .value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+}
+
+.session-agent {
+  color: #9aa0a3;
+  font-weight: 500;
+}
+
+.session-sep {
+  color: #4d5052;
+  margin: 0 6px;
+}
+
+.session-model {
+  color: #ededed;
+  font-weight: 600;
+}
+
+.session-empty {
+  color: #6f7370;
+  font-style: italic;
 }
 
 .detail,
@@ -262,7 +325,7 @@ h1 {
   padding-bottom: 14px;
 }
 
-.project-form label {
+.project-form-label {
   color: #a3a3a3;
   font-size: 12px;
   font-weight: 650;
@@ -270,19 +333,44 @@ h1 {
   text-transform: uppercase;
 }
 
-.project-form input {
+/* Read-only folder badge — replaces the editable input. The full path lives
+   in the title attribute so curious users can hover for the absolute path,
+   but keyboard editing is impossible because there's no input element. */
+.project-folder {
+  align-items: center;
   background: #101011;
-  border: 1px solid #333336;
+  border: 1px solid #303033;
   border-radius: 8px;
-  color: #eeeeee;
+  color: #ededed;
+  display: flex;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 8px;
   min-height: 38px;
-  outline: none;
-  padding: 0 10px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 12px;
   width: 100%;
 }
 
-.project-form input:focus {
-  border-color: #77777d;
+.project-folder svg {
+  color: #9aa0a3;
+  flex-shrink: 0;
+}
+
+.project-folder.empty {
+  color: #6f7370;
+  font-style: italic;
+  font-weight: 500;
+}
+
+.project-folder-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-actions {
@@ -328,7 +416,10 @@ h1 {
   border: 1px solid #333336;
   border-radius: 10px;
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* minmax(0, 1fr) lets the title track actually shrink below its
+     min-content size — without this, a long title pushes the action column
+     out of the row's overflow:hidden box and the buttons vanish. */
+  grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 6px;
   overflow: hidden;
 }
@@ -347,7 +438,11 @@ h1 {
   flex-direction: column;
   gap: 6px;
   justify-content: center;
+  /* min-width: 0 + max-width:100% are the magic that keeps the title
+     button from blowing out the grid row when the title is long. */
   min-height: 56px;
+  min-width: 0;
+  max-width: 100%;
   padding: 10px 12px;
   text-align: left;
   width: 100%;
@@ -355,13 +450,15 @@ h1 {
 
 .session-row .session > span {
   color: #f1f1f1;
+  display: block;
   font-size: 13.5px;
   font-weight: 650;
   line-height: 1.25;
+  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  width: 100%;
 }
 
 .session-row .session small {
@@ -383,7 +480,9 @@ h1 {
 .session-actions {
   border-left: 1px solid #303033;
   display: grid;
+  flex-shrink: 0;
   grid-template-rows: 1fr 1fr;
+  min-width: 38px;
   width: 38px;
 }
 
@@ -1032,11 +1131,23 @@ h1 {
   font-size: 12px;
 }
 
-/* --- Notice (info banner under errors) -------------------------------- */
+/* --- Notice (info banner under errors) --------------------------------
+   The stack is taken OUT of document flow so notices can never push the
+   topbar / status grid / workspace down. Toast-style overlay anchored to
+   the top center; pointer-events:none on the stack lets clicks pass
+   through to the chat behind, while individual cards opt back in for
+   their own click targets. */
 .notice-stack {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  left: 50%;
+  pointer-events: none;
+  position: fixed;
+  top: 18px;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  z-index: 50;
 }
 
 .notice-stack:empty {
@@ -1045,18 +1156,26 @@ h1 {
 
 .notice {
   align-items: center;
+  animation: notice-fade-in 0.18s ease-out;
   background: #14171a;
   border: 1px solid #2f3a3a;
   border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   color: #cfe2cf;
   display: flex;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 10px 14px;
+  pointer-events: auto;
   width: 100%;
 }
 
 .notice svg {
   color: #91bd94;
+}
+
+@keyframes notice-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* --- Composer wrap (anchors slash preview without shifting chat) ----- */
@@ -1441,13 +1560,33 @@ h1 {
   color: #9aa0a3;
   display: flex;
   font-size: 11.5px;
+  gap: 10px;
   justify-content: space-between;
+  min-width: 0;
+  overflow: hidden;
   padding: 8px 12px;
 }
 
+/* The agent label is tiny and fixed; let it keep its width. */
+.side-foot > span:first-child {
+  flex-shrink: 0;
+}
+
+/* The model id is monospace and can be long (cb/claude-sonnet-4.7-1m).
+   Clamp + ellipsize from the LEFT so the provider prefix is the first
+   thing to truncate when the row is narrow — the model name on the
+   right is the more useful part to keep visible. */
 .side-foot-model {
   color: #ededed;
+  direction: rtl;
+  flex: 1 1 auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+  white-space: nowrap;
 }
 
 /* Files tab */
@@ -2325,4 +2464,198 @@ h1 {
   color: #d3c178;
   font-size: 11.5px;
   margin: 0;
+}
+
+/* --- FilesList (left sidebar, above Sessions) -----------------------
+   Compact list of files Zero touched in the current session. Each row
+   ends with a tiny status badge (new / modified / read) so the user can
+   tell at a glance what changed. Long paths shorten to dir/basename
+   with the full path in the title attribute. */
+.files-panel {
+  border-bottom: 1px solid #2b2b2e;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding-bottom: 14px;
+}
+
+.files-panel-label {
+  align-items: baseline;
+  color: #a3a3a3;
+  display: flex;
+  font-size: 11.5px;
+  font-weight: 650;
+  gap: 6px;
+  letter-spacing: 0.08em;
+  margin: 0 0 4px;
+  text-transform: uppercase;
+}
+
+.files-panel-count {
+  background: #2a2a2d;
+  border-radius: 999px;
+  color: #d6d6d6;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  text-transform: none;
+}
+
+.files-panel-empty {
+  color: #6f7370;
+  font-size: 12px;
+  font-style: italic;
+  margin: 0;
+}
+
+.files-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.files-panel-row {
+  align-items: center;
+  border-radius: 4px;
+  color: #c9c9c9;
+  display: grid;
+  font-size: 11.5px;
+  gap: 6px;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  padding: 3px 6px;
+}
+
+.files-panel-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.files-panel-row svg {
+  color: #9aa0a3;
+}
+
+.files-panel-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-panel-status {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+.files-panel-status.modified {
+  color: #d3c178;
+}
+
+.files-panel-status.read {
+  color: #6f7370;
+}
+
+/* --- Permission card (in-chat) --------------------------------------
+   Yellow-tinted alert that injects pending permission requests into
+   the message stream so the user can't miss them while the agent
+   waits for approval. Same data also drives SidePanel's Permissions
+   tab — resolving from either side clears it here. */
+.permission-card {
+  align-items: flex-start;
+  background: rgba(216, 189, 106, 0.08);
+  border: 1px solid #4a3f1f;
+  border-left: 3px solid #d3c178;
+  border-radius: 10px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  margin: 8px 0;
+  padding: 12px 14px;
+}
+
+.permission-card svg {
+  color: #d3c178;
+  margin-top: 1px;
+}
+
+.permission-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.permission-card-title {
+  color: #f4e9c8;
+  font-size: 12.5px;
+  font-weight: 700;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.permission-card-detail {
+  color: #d6d6d6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  margin: 0;
+  word-break: break-word;
+}
+
+.permission-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.permission-action {
+  background: transparent;
+  border: 1px solid #3a3a3e;
+  border-radius: 6px;
+  color: #ededed;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 10px;
+}
+
+.permission-action.approve {
+  background: #1d2a1d;
+  border-color: #355035;
+  color: #b0d3b3;
+}
+
+.permission-action.approve:hover {
+  background: #243524;
+}
+
+.permission-action.approve-always {
+  background: #1d231a;
+  border-color: #455a40;
+  color: #cbe6b3;
+}
+
+.permission-action.approve-always:hover {
+  background: #232b1f;
+}
+
+.permission-action.deny {
+  background: #2a1c1c;
+  border-color: #5a3737;
+  color: #f0a4a4;
+}
+
+.permission-action.deny:hover {
+  background: #3a2424;
 }

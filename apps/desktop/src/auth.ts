@@ -5,18 +5,28 @@
 // or sign-out. The cookie travels automatically because zero-api.ts sends
 // credentials: 'include' on every request.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AuthRequiredError,
   authLogout,
   authMe,
   AUTH_START_URL,
+  setSessionToken,
   type AuthMeResponse,
   type AuthUser,
 } from './zero-api';
 import { desktop } from './tauri';
 
 const API_BASE = 'http://127.0.0.1:8910';
+
+// One-time per-launch claim the desktop binds to its sign-in attempt. The
+// daemon echoes it back on the auth.signed_in bus event so we know the
+// signedToken that follows belongs to OUR /signin click, not someone else's.
+function newClaim(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 export type AuthState =
   | { status: 'loading'; user: null; isDev: false }
@@ -32,6 +42,9 @@ export type UseAuth = {
 
 export function useCurrentUser(): UseAuth {
   const [state, setState] = useState<AuthState>({ status: 'loading', user: null, isDev: false });
+  // Latest in-flight claim. Lives in a ref so the SSE handler always sees the
+  // current value even if a re-render hasn't run yet.
+  const pendingClaim = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -59,15 +72,17 @@ export function useCurrentUser(): UseAuth {
   }, []);
 
   const signIn = useCallback(async () => {
-    // Open the system browser — the daemon's /auth/google/start sets PKCE +
-    // state + redirects to Google. After consent, /auth/google/callback writes
-    // the cookie and broadcasts auth.signed_in on the bus.
+    // Mint a one-shot claim and pass it on the start URL. The daemon binds
+    // the claim to this OAuth flow and echoes it back via the bus event so we
+    // know which signed_in is ours. Without this hook the Tauri webview
+    // would never see the cookie that the system browser collected.
+    const claim = newClaim();
+    pendingClaim.current = claim;
+    const url = `${AUTH_START_URL}?claim=${encodeURIComponent(claim)}`;
     try {
-      await desktop.openExternalUrl(AUTH_START_URL);
+      await desktop.openExternalUrl(url);
     } catch {
-      // Fall back to window.open in the rare case the Tauri shell command is
-      // unavailable; this still works inside dev (vite preview).
-      window.open(AUTH_START_URL, '_blank');
+      window.open(url, '_blank');
     }
   }, []);
 
@@ -75,6 +90,7 @@ export function useCurrentUser(): UseAuth {
     try {
       await authLogout();
     } finally {
+      setSessionToken(null);
       setState({ status: 'signed_out', user: null, isDev: false });
     }
   }, []);
@@ -92,13 +108,32 @@ export function useCurrentUser(): UseAuth {
   }, [refresh]);
 
   // Subscribe to auth bus events so the UI updates the moment the daemon
-  // accepts the OAuth callback.
+  // accepts the OAuth callback. The SSE handler is the only path that
+  // delivers the bearer token to a Tauri webview — fetch's cookie jar can't
+  // see what the system browser saved.
   useEffect(() => {
     const source = new EventSource(`${API_BASE}/events`);
-    const onSignedIn = () => {
+    const onSignedIn = (ev: MessageEvent) => {
+      let payload: { claim?: string; sessionToken?: string } = {};
+      try {
+        const parsed = JSON.parse(ev.data);
+        payload = parsed?.payload ?? {};
+      } catch {
+        /* malformed event; ignore */
+      }
+      // Drop events we didn't ask for. If no claim was bound (older daemon)
+      // we still refresh — same as previous behavior.
+      if (payload.claim && payload.claim !== pendingClaim.current) {
+        return;
+      }
+      pendingClaim.current = null;
+      if (payload.sessionToken) {
+        setSessionToken(payload.sessionToken);
+      }
       void refresh();
     };
     const onSignedOut = () => {
+      setSessionToken(null);
       setState({ status: 'signed_out', user: null, isDev: false });
     };
     source.addEventListener('auth.signed_in', onSignedIn as EventListener);

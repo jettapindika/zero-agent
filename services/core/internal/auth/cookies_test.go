@@ -93,3 +93,37 @@ func TestClearCookieIsTombstone(t *testing.T) {
 		t.Fatalf("MaxAge = %d, expected negative tombstone", cookies[0].MaxAge)
 	}
 }
+
+func TestReadSessionIDAcceptsAuthorizationBearer(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	signed := signSessionID("desktop-session-1", secret)
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+signed)
+
+	got := ReadSessionID(r, secret)
+	if got != "desktop-session-1" {
+		t.Fatalf("got %q, want %q", got, "desktop-session-1")
+	}
+}
+
+func TestReadSessionIDIgnoresMalformedAuthorization(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+
+	cases := []string{
+		"",
+		"Bearer ",
+		"Basic abc",
+		"Bearer not-a-signed-value",
+		"Bearer foo.bar",
+	}
+	for _, h := range cases {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		if h != "" {
+			r.Header.Set("Authorization", h)
+		}
+		if got := ReadSessionID(r, secret); got != "" {
+			t.Fatalf("header %q: expected empty, got %q", h, got)
+		}
+	}
+}
