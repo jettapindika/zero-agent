@@ -23,14 +23,61 @@ zero CLI (line REPL) ─┼─►  Go SDK  ─►  local HTTP/SSE core  ─►  
 ```bash
 git clone <this repo>
 cd zero-agent
-cp .env.example ~/.config/zero/.env       # then edit URL + API key
 make build
 make install
+zero setup                                # creates ~/.config/zero/.env
+# edit ~/.config/zero/.env and set ZERO_ROUTER_API_KEY
 zero start                                # background daemon
 zero .                                    # open desktop in current folder
 ```
 
-That's it. Anything OpenAI-compatible at `ZERO_ROUTER_BASE_URL` will work.
+That's it. The **only** thing a fresh user has to set is their model
+provider's API key. Everything else is opt-in.
+
+### Two ways to deploy
+
+Zero supports both **single-user** and **multi-user** out of the box. Pick
+the one that matches your situation:
+
+#### A. Single-user (default — recommended for personal use)
+
+No `.env` flags beyond the API key. Anonymous, no login screen, all data in
+local SQLite at `~/.zero/zero.db`. This is what `zero setup` produces by
+default.
+
+- ✅ No Google Cloud project needed.
+- ✅ No Supabase project needed.
+- ✅ Full desktop UI, all tools, full collaboration over `zero://` invite links.
+- ✅ Any OpenAI-compatible model endpoint.
+
+#### B. Multi-user (turn on Google sign-in)
+
+Anyone with a Google account can sign in — the daemon auto-creates a `users`
+row on first login. There is **no allowlist**: every authenticated Google
+identity gets `role: "user"` and full access. `DEV_EMAILS` only decides who
+also gets `role: "dev"` (the Dev tab + `/dev/*` endpoints).
+
+Set in `~/.config/zero/.env`:
+
+```bash
+ZERO_AUTH_ENABLED=true
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_CALLBACK_URL=http://127.0.0.1:8910/auth/google/callback
+SESSION_SECRET=$(openssl rand -hex 32)
+DEV_EMAILS=you@example.com           # optional, comma-separated
+```
+
+If you also set `ZERO_SUPABASE_DB_URL`, the `users` and `auth_sessions`
+tables live in Supabase Postgres so the **same identity follows users
+across multiple Zero hosts**. Without it, each host has its own SQLite
+`users` table — sign in once per machine.
+
+> **Want to restrict who can sign in?** There is currently no built-in
+> allowlist beyond `DEV_EMAILS` (which gates *role*, not *access*). If you
+> need invite-only or domain-restricted sign-in, that's a small patch in
+> `services/core/internal/auth/service.go` after `FetchUserInfo` and before
+> `UpsertUser`. Contributions welcome.
 
 ---
 
@@ -143,11 +190,12 @@ tools/library      agent learned-context library
 
 ---
 
-## Optional: Google sign-in (multi-user)
+## Multi-user mode (Google sign-in)
 
-Auth is **off by default** and most installs never need it. Single-user
-local installs keep working with no changes. Turn it on when you want the
-daemon to gate `/sessions/*`, `/projects/*`, etc. behind a real identity:
+Off by default. Turn it on when you want the daemon to gate `/sessions/*`,
+`/projects/*`, etc. behind a real identity. Once enabled, **any Google
+account** can sign in — the daemon auto-creates a `users` row on first
+login. There is no allowlist (see "What if I want invite-only?" below).
 
 1. Create a Google Cloud project at <https://console.cloud.google.com> →
    Enable the People API.
@@ -171,11 +219,15 @@ When `ZERO_AUTH_ENABLED=true`:
 
 - Every non-public route returns `401` until the user signs in.
 - The desktop window shows a centered "Sign in with Google" card.
-- Click → system browser opens → consent → daemon sets an
-  `httpOnly; SameSite=Lax` session cookie → desktop re-fetches `/auth/me`.
-- Accounts in `DEV_EMAILS` get `role: "dev"` and see the **Dev** tab in the
-  side panel.
-- All other accounts default to `role: "user"`.
+- Click → system browser opens → consent → daemon `UpsertUser` (insert or
+  update keyed on `google_id`) → `auth_sessions` row created → daemon sets
+  an `httpOnly; SameSite=Lax` signed cookie → desktop re-fetches `/auth/me`.
+- **Any Google account that completes the OAuth flow gets in.** The daemon
+  doesn't check the email against an allowlist — first-time visitors are
+  auto-onboarded with `role: "user"`.
+- Accounts in `DEV_EMAILS` are upserted with `role: "dev"` and see the
+  **Dev** tab in the side panel + can hit `/dev/runtime` and
+  `/dev/skills/reload`.
 
 Public routes (always reachable without a cookie):
 
@@ -189,11 +241,35 @@ GET  /auth/me
 POST /auth/logout
 ```
 
-### Optional: Supabase Postgres for auth tables
+### What if I want invite-only?
 
-By default `users` and `auth_sessions` live in local SQLite at
-`~/.zero/zero.db`. If you want the same identity to follow you across
-machines, point the daemon at a Supabase Postgres project:
+Out of the box, anyone with a Google account can sign in. If you need
+domain-restricted (`@yourcompany.com` only) or explicit-allowlist
+sign-in, add the check between `FetchUserInfo` and `UpsertUser` in
+`services/core/internal/auth/service.go::CompleteFlow`. Roughly:
+
+```go
+info, err := FetchUserInfo(ctx, s.httpClient, tok.AccessToken)
+if err != nil { return ... }
+if !strings.HasSuffix(info.Email, "@yourcompany.com") {
+    return "", nil, claim, errors.New("email not in allowlist")
+}
+role := RoleFor(info.Email, s.devEmails)
+upserted, err := s.store.UpsertUser(...)
+```
+
+Contributions welcome to make this a config-driven knob (e.g.
+`ZERO_AUTH_ALLOWED_DOMAINS=acme.com,example.org`) — see issue tracker.
+
+### Supabase Postgres (multi-host shared identity)
+
+When auth is on, `users` and `auth_sessions` live in local SQLite at
+`~/.zero/zero.db` by default. That works fine for a single host with many
+users — every user signs in once on that host, the daemon remembers them.
+
+If you want the **same Google identity to be recognized across multiple
+Zero hosts** (e.g. a personal laptop + a workstation, or a shared team
+deployment), point all hosts at a single Supabase Postgres project:
 
 1. Create a Supabase project, install the CLI, and link this repo:
 

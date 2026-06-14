@@ -102,19 +102,111 @@ var setupCmd = &cobra.Command{
 			return err
 		}
 		configPath := filepath.Join(zeroDir(), "config.json")
+		configCreated := false
 		if _, err := os.Stat(configPath); os.IsNotExist(err) {
 			if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
 				return err
 			}
+			configCreated = true
 		}
+
+		envDir, envPath := userEnvPath()
+		envCreated := false
+		if envPath != "" {
+			if _, err := os.Stat(envPath); os.IsNotExist(err) {
+				_ = os.MkdirAll(envDir, 0o700)
+				if err := os.WriteFile(envPath, []byte(starterEnvFile), 0o600); err == nil {
+					envCreated = true
+				}
+			}
+		}
+
 		fmt.Println("Zero setup complete")
-		fmt.Printf("  dir:    %s\n", zeroDir())
-		fmt.Printf("  config: %s\n", configPath)
-		fmt.Printf("  pid:    %s\n", pidPath())
-		fmt.Printf("  log:    %s\n", logPath())
+		fmt.Println()
+		fmt.Printf("  dir:     %s\n", zeroDir())
+		fmt.Printf("  config:  %s%s\n", configPath, statusTag(configCreated))
+		if envPath != "" {
+			fmt.Printf("  env:     %s%s\n", envPath, statusTag(envCreated))
+		}
+		fmt.Printf("  pid:     %s\n", pidPath())
+		fmt.Printf("  log:     %s\n", logPath())
+		fmt.Println()
+		fmt.Println("Required for the agent to actually do anything:")
+		fmt.Println("  ZERO_ROUTER_BASE_URL  (default: https://api.openai.com/v1)")
+		fmt.Println("  ZERO_ROUTER_API_KEY   (your provider's key — REQUIRED)")
+		fmt.Println()
+		fmt.Println("Pick a deployment mode (both work out of the box):")
+		fmt.Println()
+		fmt.Println("  A. Single-user (default)")
+		fmt.Println("     Leave ZERO_AUTH_ENABLED unset. No login screen, anonymous,")
+		fmt.Println("     all data in local SQLite at ~/.zero/zero.db.")
+		fmt.Println()
+		fmt.Println("  B. Multi-user — anyone with a Google account can sign in")
+		fmt.Println("     Set ZERO_AUTH_ENABLED=true plus GOOGLE_CLIENT_ID/SECRET +")
+		fmt.Println("     SESSION_SECRET. The daemon auto-creates users on first")
+		fmt.Println("     login. Set ZERO_SUPABASE_DB_URL to share users across hosts.")
+		fmt.Println()
+		if envPath != "" && envCreated {
+			fmt.Printf("Edit %s and set ZERO_ROUTER_API_KEY, then run `zero start`.\n", envPath)
+		} else {
+			fmt.Println("Set the env vars in your shell rc or ~/.config/zero/.env, then `zero start`.")
+		}
 		return nil
 	},
 }
+
+func userEnvPath() (string, string) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", ""
+	}
+	dir := filepath.Join(home, ".config", "zero")
+	return dir, filepath.Join(dir, ".env")
+}
+
+func statusTag(created bool) string {
+	if created {
+		return "  (created)"
+	}
+	return "  (already exists, kept as-is)"
+}
+
+const starterEnvFile = `# Zero local environment. This file is gitignored — never commit it.
+# Lines starting with # are ignored.
+
+# ----------------------------------------------------------------------------
+# Provider — Bring Your Own Model (REQUIRED for the agent to work)
+# Any OpenAI-compatible /v1 endpoint: OpenAI, OpenRouter, LiteLLM, Ollama,
+# vLLM, llama.cpp, LM Studio, etc.
+# ----------------------------------------------------------------------------
+ZERO_ROUTER_BASE_URL=https://api.openai.com/v1
+ZERO_ROUTER_API_KEY=
+
+# Optional: pin a default model id. Otherwise Zero falls back to gpt-4o-mini.
+# ZERO_DEFAULT_MODEL=gpt-4o-mini
+
+# ----------------------------------------------------------------------------
+# Multi-user mode (Google sign-in). Off by default → single-user, no login.
+# Turn on by setting ZERO_AUTH_ENABLED=true plus the four Google fields below.
+# When enabled, ANY Google account can sign in — the daemon upserts a row in
+# the users table on first login (role: "user"). DEV_EMAILS is for elevated
+# role assignment only, not for restricting who can sign in.
+# ----------------------------------------------------------------------------
+# ZERO_AUTH_ENABLED=true
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+# GOOGLE_CALLBACK_URL=http://127.0.0.1:8910/auth/google/callback
+# SESSION_SECRET=
+# DEV_EMAILS=                         # comma-separated, optional
+
+# ----------------------------------------------------------------------------
+# Optional: Supabase Postgres backs the multi-user auth tables. When set, the
+# users + auth_sessions tables live in Supabase so the same identity follows
+# users across multiple Zero hosts. When unset, those tables live in local
+# SQLite — fine for a single-host multi-user deployment, one row per machine.
+# ----------------------------------------------------------------------------
+# ZERO_SUPABASE_DB_URL=postgresql://postgres:PASSWORD@db.<project-ref>.supabase.co:5432/postgres
+`
 
 var startCmd = &cobra.Command{
 	Use:   "start",

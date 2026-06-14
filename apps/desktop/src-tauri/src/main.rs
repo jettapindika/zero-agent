@@ -11,6 +11,35 @@ use tokio::time::sleep;
 const ZERO_API_BASE: &str = "http://127.0.0.1:8910";
 const DEFAULT_PROVIDER_BASE: &str = "https://api.openai.com/v1";
 
+fn load_dotenv() {
+    let candidates: Vec<PathBuf> = [
+        std::env::current_dir().ok().map(|p| p.join(".env")),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("zero").join(".env")),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".zero").join(".env")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for path in candidates {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some(idx) = trimmed.find('=') {
+                    let key = trimmed[..idx].trim();
+                    let val = trimmed[idx + 1..].trim().trim_matches('"').trim_matches('\'');
+                    if !key.is_empty() && std::env::var(key).is_err() {
+                        std::env::set_var(key, val);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct ServerProcess {
     child: Mutex<Option<CommandChild>>,
@@ -272,6 +301,7 @@ fn mime_for(path: &std::path::Path) -> String {
 }
 
 fn main() {
+    load_dotenv();
     let mut builder = tauri::Builder::default();
 
     #[cfg(desktop)]
