@@ -122,12 +122,15 @@ export function ShareModal({
     }
     const identity = await getIdentity();
     const displayName = joinDisplayName.trim() || identity.displayName || 'Guest';
-    const result = await joinRoom(identity, effectiveRoomId, effectiveToken, displayName);
+    const guestClientId = `guest_${crypto.randomUUID().slice(0, 8)}`;
+    const guestIdentity = { ...identity, clientId: guestClientId };
+    const result = await joinRoom(guestIdentity, effectiveRoomId, effectiveToken, displayName);
     const cfg: JoinedRoomConfig = {
       sessionId: result.room.id,
       roomName: result.room.name,
       role: result.participant.role,
       displayName: result.participant.displayName,
+      guestClientId,
       hostClientId: result.room.hostClientId,
       joinedAt: new Date().toISOString(),
     };

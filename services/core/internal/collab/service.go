@@ -22,6 +22,8 @@ type Service struct {
 	chatMu            sync.RWMutex
 	interruptRequests map[string]*InterruptRequest
 	irMu              sync.RWMutex
+	sessionRequests   map[string]*SessionRequest
+	srMu              sync.RWMutex
 }
 
 type PromptExecutor func(ctx context.Context, item *PromptQueueItem) error
@@ -32,6 +34,7 @@ func NewService(store *Store, eventBus *bus.Bus) *Service {
 		bus:               eventBus,
 		chatHistory:       make(map[string][]ChatMessage),
 		interruptRequests: make(map[string]*InterruptRequest),
+		sessionRequests:   make(map[string]*SessionRequest),
 	}
 }
 
@@ -52,8 +55,8 @@ type RoomConfig struct {
 }
 
 type CreateRoomResult struct {
-	Room        *Room
-	InviteToken string
+	Room        *Room  `json:"room"`
+	InviteToken string `json:"inviteToken"`
 }
 
 func (s *Service) CreateRoom(ctx context.Context, input CreateRoomInput) (*CreateRoomResult, error) {
@@ -112,8 +115,8 @@ type JoinRoomInput struct {
 }
 
 type JoinRoomResult struct {
-	Room        *Room
-	Participant *Participant
+	Room        *Room        `json:"room"`
+	Participant *Participant `json:"participant"`
 }
 
 func (s *Service) JoinRoom(ctx context.Context, input JoinRoomInput) (*JoinRoomResult, error) {
@@ -228,9 +231,9 @@ type SubmitPromptInput struct {
 }
 
 type SubmitPromptResult struct {
-	QueueItem *PromptQueueItem
-	Queued    bool
-	Review    bool
+	QueueItem *PromptQueueItem `json:"queueItem"`
+	Queued    bool             `json:"queued"`
+	Review    bool             `json:"review"`
 }
 
 func (s *Service) SubmitPrompt(ctx context.Context, input SubmitPromptInput) (*SubmitPromptResult, error) {
@@ -721,4 +724,97 @@ func (s *Service) ResolveInterrupt(ctx context.Context, input ResolveInterruptIn
 		ActorClientID: req.RequesterID,
 		CancelRun:     input.CancelRun,
 	})
+}
+
+func (s *Service) RequestSession(ctx context.Context, roomID, actorClientID string) (*SessionRequest, error) {
+	room, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	actor, err := s.store.GetParticipant(ctx, roomID, actorClientID)
+	if err != nil {
+		return nil, ErrUnauthorized
+	}
+
+	if actorClientID == room.HostClientID {
+		return nil, fmt.Errorf("host does not need to request sessions")
+	}
+
+	req := &SessionRequest{
+		ID:            uuid.New().String(),
+		RoomID:        roomID,
+		RequesterID:   actorClientID,
+		RequesterNick: actor.DisplayName,
+		Status:        "pending",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+
+	s.srMu.Lock()
+	s.sessionRequests[req.ID] = req
+	s.srMu.Unlock()
+
+	s.bus.PublishRoom(EventSessionRequested, room.ID, room.ProjectID, "", req)
+
+	return req, nil
+}
+
+type ResolveSessionRequestInput struct {
+	RoomID        string
+	RequestID     string
+	ActorClientID string
+	Approve       bool
+	CreateSession func(ctx context.Context, projectID, title, model, agent string) (string, error)
+}
+
+type ResolveSessionRequestResult struct {
+	SessionID string `json:"sessionId,omitempty"`
+	Approved  bool   `json:"approved"`
+}
+
+func (s *Service) ResolveSessionRequest(ctx context.Context, input ResolveSessionRequestInput) (*ResolveSessionRequestResult, error) {
+	s.srMu.Lock()
+	req, exists := s.sessionRequests[input.RequestID]
+	if exists {
+		delete(s.sessionRequests, input.RequestID)
+	}
+	s.srMu.Unlock()
+
+	if !exists || req == nil {
+		return nil, fmt.Errorf("session request not found")
+	}
+
+	room, err := s.store.GetRoom(ctx, req.RoomID)
+	if err != nil {
+		return nil, err
+	}
+
+	if input.ActorClientID != room.HostClientID {
+		return nil, ErrUnauthorized
+	}
+
+	if !input.Approve {
+		req.Status = "rejected"
+		s.bus.PublishRoom(EventSessionRejected, room.ID, room.ProjectID, "", req)
+		return &ResolveSessionRequestResult{Approved: false}, nil
+	}
+
+	req.Status = "approved"
+
+	var sessionID string
+	if input.CreateSession != nil {
+		title := fmt.Sprintf("%s's session", req.RequesterNick)
+		sid, err := input.CreateSession(ctx, room.ProjectID, title, "9router/cb/claude-opus-4.7-1m", "build")
+		if err != nil {
+			return nil, fmt.Errorf("create session: %w", err)
+		}
+		sessionID = sid
+	}
+
+	s.bus.PublishRoom(EventSessionApproved, room.ID, room.ProjectID, sessionID, map[string]any{
+		"request":   req,
+		"sessionId": sessionID,
+	})
+
+	return &ResolveSessionRequestResult{Approved: true, SessionID: sessionID}, nil
 }

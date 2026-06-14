@@ -19,6 +19,8 @@ import { UserChip } from './components/UserChip';
 import {
   loadShareConfig,
   loadJoinedRoom,
+  clearJoinedRoom,
+  requestSession,
   type ShareConfig,
   type JoinedRoomConfig,
   getIdentity,
@@ -144,10 +146,11 @@ function AppShell({ currentUser, isDev, onSignOut, onSignIn }: AppShellProps) {
   const isCollabActive = !!shareConfig || !!joinedRoom;
   const isCollabHost = !!shareConfig;
   const collabSessionId = activeSession?.id ?? null;
+  const collabSelfId = joinedRoom?.guestClientId ?? identity?.clientId ?? null;
 
   const activePromptState = useActivePrompt(
     collabRoomId,
-    identity?.clientId ?? null,
+    collabSelfId,
     isCollabActive,
   );
   const showInterruptWarning =
@@ -465,6 +468,21 @@ function AppShell({ currentUser, isDev, onSignOut, onSignIn }: AppShellProps) {
     }
   }
 
+  async function handleRequestSession() {
+    if (!collabRoomId || !collabSelfId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const guestIdentity = { clientId: collabSelfId, displayName: joinedRoom?.displayName ?? 'Guest' };
+      await requestSession(guestIdentity, collabRoomId);
+      pushNotice('info', 'Session request sent to host. Waiting for approval.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function handleRenameSession(session: Session) {
     if (!project) return;
     setRenamingId(session.id);
@@ -752,14 +770,23 @@ function AppShell({ currentUser, isDev, onSignOut, onSignIn }: AppShellProps) {
               <button disabled={!server.ok || busy} onClick={handleChooseProject} type="button">
                 <FolderOpen size={16} /> Choose folder
               </button>
-              <button
-                disabled={!server.ok || busy || !project || !!shareConfig}
-                onClick={() => setShareModalOpen(true)}
-                title={shareConfig ? 'Already sharing — stop in the bar above' : 'Share this folder with another Zero user'}
-                type="button"
-              >
-                <Share2 size={16} /> {shareConfig ? 'Sharing…' : 'Share folder'}
-              </button>
+              {joinedRoom ? (
+                <button
+                  onClick={() => { clearJoinedRoom(); setJoinedRoom(null); }}
+                  type="button"
+                >
+                  <X size={16} /> Leave room
+                </button>
+              ) : (
+                <button
+                  disabled={!server.ok || busy || !project || !!shareConfig}
+                  onClick={() => setShareModalOpen(true)}
+                  title={shareConfig ? 'Already sharing — stop in the bar above' : 'Share this folder with another Zero user'}
+                  type="button"
+                >
+                  <Share2 size={16} /> {shareConfig ? 'Sharing…' : 'Share folder'}
+                </button>
+              )}
             </div>
           </div>
           <FilesList 
@@ -775,9 +802,14 @@ function AppShell({ currentUser, isDev, onSignOut, onSignIn }: AppShellProps) {
             {!joinedRoom || isCollabHost ? (
               <button type="button" onClick={handleNewSession} disabled={!project || busy}>New</button>
             ) : (
-              <span className="panel-header-note" title="Only the host can create new sessions in a shared room">
-                Host only
-              </span>
+              <button
+                type="button"
+                className="request-session-btn"
+                onClick={handleRequestSession}
+                disabled={busy}
+              >
+                Request Session
+              </button>
             )}
           </div>
           {sessions.length === 0 ? (
@@ -989,8 +1021,9 @@ function AppShell({ currentUser, isDev, onSignOut, onSignIn }: AppShellProps) {
       ) : null}
       <CollabChatBar
         roomId={collabRoomId}
-        selfId={identity?.clientId ?? null}
+        selfId={collabSelfId}
         isActive={isCollabActive}
+        displayName={joinedRoom?.displayName ?? currentUser.displayName}
         activePromptNickname={
           activePromptState.active && !activePromptState.isSelf
             ? activePromptState.active.actorNickname

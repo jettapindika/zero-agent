@@ -69,6 +69,21 @@ export function getSessionToken(): string | null {
   return sessionToken;
 }
 
+async function tryRefreshToken(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (data.sessionToken) {
+      setSessionToken(data.sessionToken);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -77,11 +92,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (sessionToken) {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
-  const response = await fetch(`${API_BASE}${path}`, {
+  let response = await fetch(`${API_BASE}${path}`, {
     ...init,
     credentials: 'include',
     headers,
   });
+
+  if (response.status === 401 && sessionToken) {
+    const refreshed = await tryRefreshToken();
+    if (refreshed) {
+      headers['Authorization'] = `Bearer ${sessionToken}`;
+      response = await fetch(`${API_BASE}${path}`, {
+        ...init,
+        credentials: 'include',
+        headers,
+      });
+    }
+  }
 
   if (!response.ok) {
     const text = await response.text();

@@ -33,4 +33,8 @@ const (
 	EventInterruptRequested = "collab.interrupt.requested"
 	EventInterruptApproved  = "collab.interrupt.approved"
 	EventInterruptRejected  = "collab.interrupt.rejected"
+
+	EventSessionRequested = "collab.session.requested"
+	EventSessionApproved  = "collab.session.approved"
+	EventSessionRejected  = "collab.session.rejected"
 )

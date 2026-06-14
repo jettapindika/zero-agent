@@ -50,6 +50,7 @@ export type JoinedRoomConfig = {
   roomName?: string;
   role: string;
   displayName: string;
+  guestClientId: string;
   hostClientId: string;
   joinedAt: string;
 };
@@ -218,6 +219,43 @@ export async function resolveInterrupt(
 ): Promise<InterruptResult> {
   return request<InterruptResult>(
     `/collab/rooms/${encodeURIComponent(roomId)}/interrupt-requests/${encodeURIComponent(requestId)}/resolve`,
+    {
+      method: 'POST',
+      clientId: identity.clientId,
+      body: JSON.stringify({ approve }),
+    },
+  );
+}
+
+export type SessionRequest = {
+  id: string;
+  roomId: string;
+  requesterId: string;
+  requesterNickname: string;
+  status: 'pending' | 'approved' | 'rejected';
+};
+
+export async function requestSession(
+  identity: ClientIdentity,
+  roomId: string,
+): Promise<SessionRequest> {
+  return request<SessionRequest>(
+    `/collab/rooms/${encodeURIComponent(roomId)}/session-requests`,
+    {
+      method: 'POST',
+      clientId: identity.clientId,
+    },
+  );
+}
+
+export async function resolveSessionRequest(
+  identity: ClientIdentity,
+  roomId: string,
+  requestId: string,
+  approve: boolean,
+): Promise<{ sessionId?: string }> {
+  return request<{ sessionId?: string }>(
+    `/collab/rooms/${encodeURIComponent(roomId)}/session-requests/${encodeURIComponent(requestId)}/resolve`,
     {
       method: 'POST',
       clientId: identity.clientId,

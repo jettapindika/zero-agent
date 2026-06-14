@@ -22,15 +22,20 @@ export type ChatState = {
   sendMessage: (text: string) => void;
 };
 
-export function useCollabChat(roomId: string | null, selfId: string | null, active: boolean): ChatState {
+export function useCollabChat(roomId: string | null, selfId: string | null, active: boolean, displayName?: string): ChatState {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [unread, setUnread] = useState(0);
   const [isOpen, setIsOpen] = useState(false);
   const isOpenRef = useRef(isOpen);
+  const selfIdRef = useRef(selfId);
 
   useEffect(() => {
     isOpenRef.current = isOpen;
   }, [isOpen]);
+
+  useEffect(() => {
+    selfIdRef.current = selfId;
+  }, [selfId]);
 
   useEffect(() => {
     if (!roomId || !selfId || !active) {
@@ -50,6 +55,8 @@ export function useCollabChat(roomId: string | null, selfId: string | null, acti
       } catch {
         return;
       }
+
+      if (parsed.fromId === selfIdRef.current) return;
 
       setMessages((prev) => [...prev, parsed]);
 
@@ -84,24 +91,40 @@ export function useCollabChat(roomId: string | null, selfId: string | null, acti
 
   const sendMessage = useCallback(
     async (text: string) => {
-      if (!roomId || !text.trim()) return;
+      if (!roomId || !selfId || !text.trim()) return;
+
+      const optimistic: ChatMessage = {
+        id: `local_${Date.now()}`,
+        roomId,
+        fromId: selfId,
+        nickname: displayName || 'You',
+        role: 'host',
+        text: text.trim(),
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, optimistic]);
 
       const token = getSessionToken();
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
+        'X-Zero-Client-ID': selfId,
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
       try {
-        await fetch(`${API_BASE}/collab/rooms/${encodeURIComponent(roomId)}/chat`, {
+        const res = await fetch(`${API_BASE}/collab/rooms/${encodeURIComponent(roomId)}/chat`, {
           method: 'POST',
           credentials: 'include',
           headers,
           body: JSON.stringify({ text: text.trim() }),
         });
+        if (res.ok) {
+          const saved: ChatMessage = await res.json();
+          setMessages((prev) => prev.map((m) => m.id === optimistic.id ? saved : m));
+        }
       } catch {}
     },
-    [roomId],
+    [roomId, selfId],
   );
 
   const openPanel = useCallback(() => {

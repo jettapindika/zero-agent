@@ -7,13 +7,15 @@ type Props = {
   selfId: string | null;
   isActive: boolean;
   activePromptNickname?: string | null;
+  displayName?: string;
 };
 
-export function CollabChatBar({ roomId, selfId, isActive, activePromptNickname }: Props) {
+export function CollabChatBar({ roomId, selfId, isActive, activePromptNickname, displayName }: Props) {
   const { messages, unread, isOpen, openPanel, closePanel, sendMessage } = useCollabChat(
     roomId,
     selfId,
     isActive,
+    displayName,
   );
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);

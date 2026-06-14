@@ -1,12 +1,15 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/zero-agent/core/internal/collab"
+	"github.com/zero-agent/core/internal/storage"
 )
 
 func (s *Server) collabRoutes() chi.Router {
@@ -33,6 +36,11 @@ func (s *Server) collabRoutes() chi.Router {
 
 	r.Post("/rooms/{roomId}/sessions/{sessionId}/interrupt", s.handleInterruptPrompt)
 	r.Post("/rooms/{roomId}/interrupt-requests/{requestId}/resolve", s.handleResolveInterrupt)
+	r.Post("/rooms/{roomId}/sessions/{sessionId}/prompt", s.handleCollabPrompt)
+	r.Get("/rooms/{roomId}/sessions/{sessionId}/messages", s.handleCollabMessages)
+
+	r.Post("/rooms/{roomId}/session-requests", s.handleRequestSession)
+	r.Post("/rooms/{roomId}/session-requests/{requestId}/resolve", s.handleResolveSessionRequest)
 
 	return r
 }
@@ -153,6 +161,177 @@ func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleRequestSession(w http.ResponseWriter, r *http.Request) {
+	clientID := r.Header.Get("X-Zero-Client-ID")
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, "missing X-Zero-Client-ID header")
+		return
+	}
+
+	roomID := chi.URLParam(r, "roomId")
+
+	req, err := s.collab.RequestSession(r.Context(), roomID, clientID)
+	if err != nil {
+		switch err {
+		case collab.ErrRoomNotFound:
+			writeError(w, http.StatusNotFound, "room not found")
+		case collab.ErrUnauthorized:
+			writeError(w, http.StatusForbidden, "not a participant")
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, req)
+}
+
+type resolveSessionRequestBody struct {
+	Approve bool `json:"approve"`
+}
+
+func (s *Server) handleResolveSessionRequest(w http.ResponseWriter, r *http.Request) {
+	clientID := r.Header.Get("X-Zero-Client-ID")
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, "missing X-Zero-Client-ID header")
+		return
+	}
+
+	roomID := chi.URLParam(r, "roomId")
+	requestID := chi.URLParam(r, "requestId")
+
+	var body resolveSessionRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := s.collab.ResolveSessionRequest(r.Context(), collab.ResolveSessionRequestInput{
+		RoomID:        roomID,
+		RequestID:     requestID,
+		ActorClientID: clientID,
+		Approve:       body.Approve,
+		CreateSession: func(ctx context.Context, projectID, title, model, agent string) (string, error) {
+			session, err := s.db.CreateSession(ctx, storage.CreateSessionInput{
+				ProjectID: projectID,
+				Title:     title,
+				Model:     model,
+				Agent:     agent,
+			})
+			if err != nil {
+				return "", err
+			}
+			s.bus.Publish("session.created", projectID, session.ID, session)
+			return session.ID, nil
+		},
+	})
+	if err != nil {
+		switch err {
+		case collab.ErrUnauthorized:
+			writeError(w, http.StatusForbidden, "only the host can approve session requests")
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+type collabPromptRequest struct {
+	Text string `json:"text"`
+}
+
+func (s *Server) handleCollabPrompt(w http.ResponseWriter, r *http.Request) {
+	clientID := r.Header.Get("X-Zero-Client-ID")
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, "missing X-Zero-Client-ID header")
+		return
+	}
+
+	roomID := chi.URLParam(r, "roomId")
+	sessionID := chi.URLParam(r, "sessionId")
+
+	_, err := s.collabStore.GetParticipant(r.Context(), roomID, clientID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
+	var req collabPromptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Text == "" {
+		writeError(w, http.StatusBadRequest, "text required")
+		return
+	}
+
+	message, err := s.db.CreateMessage(r.Context(), sessionID, "user")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	part, err := s.db.CreatePart(r.Context(), storage.CreatePartInput{
+		MessageID: message.ID,
+		Type:      "text",
+		OrderNum:  0,
+		Text:      &req.Text,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.bus.Publish("message.created", "", sessionID, map[string]any{
+		"message": message,
+		"parts":   []storage.Part{*part},
+	})
+
+	go func() {
+		ctx, cancel := s.beginRun(context.Background(), sessionID)
+		defer s.endRun(sessionID, cancel)
+		if err := s.runner.Run(ctx, sessionID); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.bus.Publish("session.status", "", sessionID, map[string]string{
+					"status": "error",
+					"error":  err.Error(),
+				})
+			}
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"message": message,
+		"running": true,
+	})
+}
+
+func (s *Server) handleCollabMessages(w http.ResponseWriter, r *http.Request) {
+	clientID := r.Header.Get("X-Zero-Client-ID")
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, "missing X-Zero-Client-ID header")
+		return
+	}
+
+	roomID := chi.URLParam(r, "roomId")
+	sessionID := chi.URLParam(r, "sessionId")
+
+	_, err := s.collabStore.GetParticipant(r.Context(), roomID, clientID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
+	messages, err := s.db.ListMessages(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, messages)
+}
 type resolveInterruptRequest struct {
 	Approve bool `json:"approve"`
 }

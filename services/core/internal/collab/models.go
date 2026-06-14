@@ -93,3 +93,12 @@ type InterruptRequest struct {
 	Status          string `json:"status"`
 	CreatedAt       string `json:"createdAt"`
 }
+
+type SessionRequest struct {
+	ID              string `json:"id"`
+	RoomID          string `json:"roomId"`
+	RequesterID     string `json:"requesterId"`
+	RequesterNick   string `json:"requesterNickname"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"createdAt"`
+}
