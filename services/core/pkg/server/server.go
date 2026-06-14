@@ -363,16 +363,24 @@ func buildAuthService(db *storage.DB) (*auth.Service, error) {
 
 	// When ZERO_SUPABASE_DB_URL is set, route auth-table writes to Supabase
 	// Postgres instead of local SQLite. Chat data still lives in SQLite.
+	// On Supabase failure (DNS, IPv6, wrong password) we DO NOT crash the
+	// daemon — we log loudly and fall back to local SQLite so chat keeps
+	// working. The user can fix the DSN and restart.
 	if dsn := os.Getenv("ZERO_SUPABASE_DB_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		store, err := storage.NewSupabaseAuthStore(ctx, dsn)
 		if err != nil {
-			return nil, fmt.Errorf("supabase auth store: %w", err)
+			slog.Error("auth backend = supabase unreachable; falling back to local sqlite",
+				"host", supabaseHost(dsn),
+				"error", err.Error(),
+				"hint", "use the Supavisor session pooler DSN if your network is IPv4-only")
+		} else {
+			slog.Info("auth backend = supabase postgres", "host", supabaseHost(dsn))
+			cfg.Store = store
 		}
-		slog.Info("auth backend = supabase postgres", "host", supabaseHost(dsn))
-		cfg.Store = store
-	} else {
+	}
+	if cfg.Store == nil {
 		slog.Info("auth backend = local sqlite")
 	}
 

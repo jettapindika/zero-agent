@@ -208,10 +208,19 @@ By default the `users` and `auth_sessions` tables live in local SQLite
    supabase db push
    ```
    Or apply directly with `psql "$ZERO_SUPABASE_DB_URL" -f services/core/supabase/migrations/00001_auth.sql`.
-4. **Set the DSN** in your env (Supabase shows it under
-   *Project Settings → Database → Connection string → URI*):
+4. **Pick a connection string** in Supabase
+   (*Project Settings → Database → Connection string*). Three options:
+   - **Session pooler (recommended)** — port 5432, IPv4+IPv6:
+     `postgresql://postgres.<ref>:PASS@aws-0-<region>.pooler.supabase.com:5432/postgres`
+   - **Direct** — IPv6-only on most projects; lowest latency where IPv6 works:
+     `postgresql://postgres:PASS@db.<ref>.supabase.co:5432/postgres`
+   - **Transaction pooler** — port 6543; good for short-lived high-concurrency.
+   Most laptops/desktops should pick the session pooler so the daemon doesn't
+   silently hang on networks without IPv6.
+
+   Then export it:
    ```bash
-   export ZERO_SUPABASE_DB_URL="postgresql://postgres:PASSWORD@db.nhhglsucankdrmedrxpm.supabase.co:5432/postgres"
+   export ZERO_SUPABASE_DB_URL="postgresql://postgres.nhhglsucankdrmedrxpm:NEWPASS@aws-0-..pooler.supabase.com:5432/postgres"
    ```
 5. **Relaunch the daemon**. On startup you'll see:
    ```

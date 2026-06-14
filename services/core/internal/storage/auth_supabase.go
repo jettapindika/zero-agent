@@ -34,10 +34,19 @@ func NewSupabaseAuthStore(ctx context.Context, dsn string) (*SupabaseAuthStore, 
 	if err != nil {
 		return nil, fmt.Errorf("parse supabase dsn: %w", err)
 	}
-	// Cap conns; the auth path is low-traffic and Supabase free tier is small.
+	// Pool tuning for the auth path:
+	//   - Auth is low-traffic so a small ceiling is fine; Supabase free tier
+	//     also enforces low connection caps.
+	//   - 30m idle matches pgx's own default (kept explicit for clarity).
+	//   - HealthCheckPeriod ensures dead conns (network blip, pooler restart)
+	//     are evicted, otherwise the next /auth/me would hang on a stale fd.
 	cfg.MaxConns = 5
 	cfg.MinConns = 0
-	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.MaxConnIdleTime = 30 * time.Minute
+	cfg.HealthCheckPeriod = 1 * time.Minute
+	// Per-attempt connect timeout. Without this the daemon blocks for the
+	// kernel TCP timeout (~75s) when the DSN is wrong or IPv6 is broken.
+	cfg.ConnConfig.ConnectTimeout = 8 * time.Second
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
