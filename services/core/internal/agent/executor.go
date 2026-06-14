@@ -17,6 +17,26 @@ type ToolExecutor struct {
 	bus         *bus.Bus
 }
 
+const ExecutorToolReasoningInjection = `Before calling any tool, follow this reasoning chain:
+
+STEP 1 — GOAL: What specific outcome does this tool call produce?
+STEP 2 — SCOPE: Which files/directories/commands are involved?
+STEP 3 — RISK: Is this reversible? Could it break existing functionality?
+STEP 4 — PERMISSION: Does this require user approval? (bash/write/edit/fetch = YES)
+STEP 5 — ALTERNATIVES: Is there a safer read-only tool that can verify first?
+
+Only after this reasoning, emit the tool call.
+
+After the tool result:
+RESULT: [What was returned]
+IMPACT: [What this tells us / what changed]
+NEXT: [Immediate next action OR task complete]
+
+If the result is unexpected:
+ANOMALY: [What's different from expectations]
+HYPOTHESIS: [Why this might have happened]
+RECOVERY: [Proposed next action]`
+
 func NewToolExecutor(tools *tool.Registry, perms *permission.Manager, eventBus *bus.Bus) *ToolExecutor {
 	return &ToolExecutor{tools: tools, permissions: perms, bus: eventBus}
 }
@@ -31,13 +51,25 @@ func (te *ToolExecutor) Execute(ctx context.Context, projectPath, projectID, ses
 	te.bus.Publish("tool.started", projectID, sessionID, map[string]string{"name": toolName, "args": string(args)})
 
 	if t.NeedsPermission() {
-		te.bus.Publish("permission.required", projectID, sessionID, map[string]string{
-			"tool":    toolName,
-			"args":    string(args),
-			"summary": fmt.Sprintf("%s %s", toolName, string(args)),
-		})
-		// For now, auto-approve in non-interactive mode.
-		// Full interactive approval will come via TUI permission flow.
+		if te.permissions == nil {
+			return tool.Result{IsError: true, Output: "permission manager is not configured"}, fmt.Errorf("permission manager is not configured")
+		}
+		argMap := map[string]any{}
+		if len(args) > 0 {
+			if err := json.Unmarshal(args, &argMap); err != nil {
+				return tool.Result{IsError: true, Output: "invalid tool args: " + err.Error()}, err
+			}
+		}
+		decision, err := te.permissions.RequestPermission(ctx, sessionID, toolName, argMap)
+		if err != nil {
+			te.bus.Publish("tool.failed", projectID, sessionID, map[string]string{"name": toolName, "error": err.Error()})
+			return tool.Result{IsError: true, Output: "permission request failed: " + err.Error()}, err
+		}
+		if decision == permission.DecisionDeny {
+			err := fmt.Errorf("permission denied for tool: %s", toolName)
+			te.bus.Publish("tool.failed", projectID, sessionID, map[string]string{"name": toolName, "error": err.Error()})
+			return tool.Result{IsError: true, Output: err.Error()}, err
+		}
 	}
 
 	tc := tool.Context{ProjectPath: projectPath, SessionID: sessionID, MessageID: messageID}
@@ -73,6 +105,6 @@ func (te *ToolExecutor) ToolSchemas() []map[string]any {
 }
 
 func (te *ToolExecutor) toolNames() []string {
-	names := []string{"read", "ls", "glob", "grep", "bash", "write", "edit", "fetch"}
+	names := []string{"read", "ls", "glob", "grep", "walk", "bash", "write", "edit", "fetch"}
 	return names
 }

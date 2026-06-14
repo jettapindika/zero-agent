@@ -152,5 +152,5 @@ function EmptyState() {
 
 function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
-  return <article className={`rounded-xl border p-4 ${isUser ? "border-cyan-400/30 bg-cyan-400/10" : "border-slate-800 bg-slate-900/70"}`}><div className="mb-2 text-xs uppercase tracking-widest text-slate-500">{message.role}</div><div className="space-y-2 text-sm leading-6">{message.parts.map((part) => <p key={part.id}>{part.text ?? part.type}</p>)}</div></article>;
+  return <article className={`rounded-xl border p-4 ${isUser ? "border-cyan-400/30 bg-cyan-400/10" : "border-slate-800 bg-slate-900/70"}`}><div className="mb-2 text-xs uppercase tracking-widest text-slate-500">{message.role}</div><div className="rounded-lg border border-slate-700 bg-slate-800/80 p-3 text-sm leading-6 text-slate-100 shadow-sm">{message.parts.map((part) => <p key={part.id}>{part.text ?? part.type}</p>)}</div></article>;
 }

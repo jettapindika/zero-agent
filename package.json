@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
+    "desktop:dev": "pnpm --filter @zero-agent/desktop tauri:dev",
+    "desktop:build": "pnpm --filter @zero-agent/desktop tauri:build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "clean": "turbo clean"

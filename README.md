@@ -23,6 +23,15 @@ bin/zero
 bin/zero-server
 ```
 
+Install the command so you can run `zero` without `./bin/`:
+
+```bash
+make install
+zero
+```
+
+By default this installs to `~/.local/bin`. If your shell cannot find `zero`, add `~/.local/bin` to `PATH`.
+
 ## First run
 
 ```bash
@@ -65,6 +74,24 @@ ctrl+c   quit
 ```
 
 The UI uses a responsive OpenCode-like layout: sidebar + chat on wide terminals, chat-focused mode on narrow terminals.
+
+## TUI slash commands
+
+```txt
+/new                         create a new session
+/clear, /reset               clear visible chat
+/status, /info               show session/model/agent status
+/history                     show message count for this session
+/model [provider/model]      show or set model
+/models                      show current model help
+/agent [build|plan|explore]  show or set agent
+/plan, /ask, /code           switch to plan/explore/build mode
+/compact, /summarize         request context compaction
+/editor, /edit               open $EDITOR for prompt drafting
+/shortcuts, /keys            show keyboard shortcuts
+/help                        show slash commands
+/quit, /exit, /q             quit
+```
 
 ## Provider
 

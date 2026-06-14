@@ -1,6 +1,8 @@
 package agent_test
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/zero-agent/core/internal/agent"
@@ -33,6 +35,32 @@ func TestRegistryStoresAndRetrievesAgents(t *testing.T) {
 
 	if len(reg.List()) != 3 {
 		t.Fatalf("expected 3 agents, got %d", len(reg.List()))
+	}
+}
+
+func TestDefaultBuildAgentUsesTerminalLocalFirstSystemPrompt(t *testing.T) {
+	build := agent.DefaultAgents("cx/gpt-5.5")[0]
+
+	for _, want := range []string{
+		"You are Zero, an expert local-first software engineer embedded in a CLI and desktop coding tool.",
+		"Dangerous tools: bash, write, edit, fetch; these require permission.",
+		"Project: {project_path}",
+		"Session goal: {user_prompt}",
+		"==text== or [highlight]text[/highlight]",
+		"[color=red]text[/color]",
+		"[color=green]text[/color]",
+	} {
+		if !strings.Contains(build.SystemPrompt, want) {
+			t.Fatalf("build prompt missing %q", want)
+		}
+	}
+}
+
+func TestDefaultAgentsCanWalkFolders(t *testing.T) {
+	for _, a := range agent.DefaultAgents("cx/gpt-5.5") {
+		if !slices.Contains(a.AllowedTools, "walk") {
+			t.Fatalf("agent %s missing walk tool: %#v", a.Name, a.AllowedTools)
+		}
 	}
 }
 

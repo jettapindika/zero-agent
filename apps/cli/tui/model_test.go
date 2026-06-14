@@ -79,7 +79,7 @@ func TestEnterSendsPrompt(t *testing.T) {
 		t.Fatalf("prompts = %#v", runner.prompts)
 	}
 	view := m.View()
-	if !strings.Contains(view, "YOU") || !strings.Contains(view, "answer: hello") {
+	if !strings.Contains(view, "You") || !strings.Contains(view, "answer: hello") {
 		t.Fatalf("view missing chat messages:\n%s", view)
 	}
 }
@@ -132,7 +132,7 @@ func TestRunningViewShowsAgentTypingIndicator(t *testing.T) {
 	m = next.(Model)
 
 	view := m.View()
-	for _, want := range []string{"Agent thinking", "ZERO", "typing", "▌"} {
+	for _, want := range []string{"Agent thinking", "Zero", "typing", "▌"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("running view missing %q:\n%s", want, view)
 		}
@@ -144,10 +144,41 @@ func TestReadableChatLabels(t *testing.T) {
 	m.messages = []Message{{Role: "user", Text: "hi"}, {Role: "assistant", Text: "hello"}, {Role: "error", Text: "boom"}}
 	m.syncViewport()
 	view := m.View()
-	for _, want := range []string{"YOU", "ZERO", "ERROR", "hi", "hello", "boom"} {
+	for _, want := range []string{"You", "Zero", "Error", "hi", "hello", "boom"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("readable view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestAssistantTextWrapsForReadableChat(t *testing.T) {
+	long := "Zero should wrap long prose into multiple readable lines instead of forcing one very long line across the terminal viewport."
+	got := renderMessages([]Message{{Role: "assistant", Text: long}}, 36)
+	for _, line := range strings.Split(got, "\n") {
+		plain := strings.TrimSpace(line)
+		if strings.HasPrefix(plain, "Zero") || plain == "" {
+			continue
+		}
+		if len(plain) > 36 {
+			t.Fatalf("line too wide (%d): %q\n%s", len(plain), plain, got)
+		}
+	}
+}
+
+func TestAssistantTextPreservesFencedCode(t *testing.T) {
+	text := "Use this:\n\n```go\nfunc main() { fmt.Println(\"hello from a deliberately long code line\") }\n```"
+	got := renderMessages([]Message{{Role: "assistant", Text: text}}, 24)
+	for _, want := range []string{"```go", "func main() { fmt.Println", "```"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatted code missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestReadableChatNormalizesExcessBlankLines(t *testing.T) {
+	got := renderMessages([]Message{{Role: "assistant", Text: "one\n\n\n\ntwo"}}, 80)
+	if strings.Contains(got, "one\n\n\n") {
+		t.Fatalf("expected excessive blank lines normalized:\n%s", got)
 	}
 }
 
@@ -163,6 +194,64 @@ func TestCtrlJSendsPromptBecauseSomeTerminalsMapEnterToCtrlJ(t *testing.T) {
 	}
 	if !m.busy {
 		t.Fatalf("expected running state after ctrl+j")
+	}
+}
+
+func TestSlashHelpShowsVariedCommands(t *testing.T) {
+	m := NewModel(Config{SessionID: "session-abcdef", Runner: &fakeRunner{}})
+	next, _ := m.handleSlashCommand("/help")
+	m = next.(Model)
+	view := m.View()
+	for _, want := range []string{"/status", "/history", "/editor", "/plan", "/ask", "/code", "/models", "/shortcuts"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("help missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestSlashStatusShowsSessionModelAndAgent(t *testing.T) {
+	m := NewModel(Config{SessionID: "session-abcdef", Model: "cx/model", Runner: &fakeRunner{}})
+	next, _ := m.handleSlashCommand("/status")
+	m = next.(Model)
+	view := m.View()
+	for _, want := range []string{"Status", "session-abcdef", "cx/model", "build"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("status missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestSlashHistoryShowsMessageCount(t *testing.T) {
+	m := NewModel(Config{SessionID: "session-1", Runner: &fakeRunner{}})
+	m.messages = []Message{{Role: "system", Text: "welcome"}, {Role: "user", Text: "hi"}, {Role: "assistant", Text: "hello"}}
+	next, _ := m.handleSlashCommand("/history")
+	m = next.(Model)
+	if !strings.Contains(m.View(), "Messages: 3") {
+		t.Fatalf("history missing count:\n%s", m.View())
+	}
+}
+
+func TestSlashModeAliasesSetAgent(t *testing.T) {
+	m := NewModel(Config{SessionID: "session-1", Runner: &fakeRunner{}})
+	for command, want := range map[string]string{"/plan": "plan", "/ask": "explore", "/code": "build"} {
+		next, _ := m.handleSlashCommand(command)
+		m = next.(Model)
+		if m.agent != want {
+			t.Fatalf("%s set agent %q, want %q", command, m.agent, want)
+		}
+	}
+}
+
+func TestSlashAliases(t *testing.T) {
+	m := NewModel(Config{SessionID: "session-1", Runner: &fakeRunner{}})
+	next, _ := m.handleSlashCommand("/summarize")
+	m = next.(Model)
+	if !strings.Contains(m.View(), "Compaction requested") {
+		t.Fatalf("summarize alias missing compact behavior:\n%s", m.View())
+	}
+	_, cmd := m.handleSlashCommand("/q")
+	if cmd == nil {
+		t.Fatalf("/q should quit")
 	}
 }
 
@@ -214,7 +303,7 @@ func TestAssistantDeltaStreamsIncrementally(t *testing.T) {
 	if last.Role != "streaming" || last.Text != "Hello" {
 		t.Fatalf("streaming message = %#v", last)
 	}
-	if !strings.Contains(m.View(), "ZERO ●") {
+	if !strings.Contains(m.View(), "Zero ●") {
 		t.Fatalf("view missing streaming indicator:\n%s", m.View())
 	}
 }
@@ -246,7 +335,7 @@ func TestRunErrMsgShowsError(t *testing.T) {
 	if m.busy {
 		t.Fatalf("expected busy=false after RunErrMsg")
 	}
-	if !strings.Contains(m.View(), "ERROR") || !strings.Contains(m.View(), "provider failed") {
+	if !strings.Contains(m.View(), "Error") || !strings.Contains(m.View(), "provider failed") {
 		t.Fatalf("view missing error:\n%s", m.View())
 	}
 }
@@ -258,18 +347,28 @@ func TestToolStartedAndCompletedShowsCards(t *testing.T) {
 	next, _ := m.Update(ToolStartedMsg{Name: "read", Args: `{"path":"main.go"}`})
 	m = next.(Model)
 	view := m.View()
-	if !strings.Contains(view, "TOOL read") || !strings.Contains(view, "running") {
+	if !strings.Contains(view, "Tool read") || !strings.Contains(view, "running") {
 		t.Fatalf("view missing tool started card:\n%s", view)
 	}
 
 	next, _ = m.Update(ToolCompletedMsg{Name: "read", Result: "file content here"})
 	m = next.(Model)
 	view = m.View()
-	if !strings.Contains(view, "TOOL read") || !strings.Contains(view, "done") {
+	if !strings.Contains(view, "Tool read") || !strings.Contains(view, "done") {
 		t.Fatalf("view missing tool completed card:\n%s", view)
 	}
 	if !strings.Contains(view, "file content here") {
 		t.Fatalf("view missing tool result:\n%s", view)
+	}
+}
+
+func TestToolCompletedTrimsLongResultPreview(t *testing.T) {
+	m := NewModel(Config{SessionID: "session-1", Runner: &fakeRunner{}})
+	m.messages = []Message{{Role: "tool", Tool: &ToolCall{Name: "grep", Status: "done", Result: "1\n2\n3\n4\n5\n6\n7\n8"}}}
+	m.syncViewport()
+	view := m.View()
+	if !strings.Contains(view, "… 2 more lines") {
+		t.Fatalf("view missing trimmed preview:\n%s", view)
 	}
 }
 

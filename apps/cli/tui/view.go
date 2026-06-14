@@ -12,6 +12,11 @@ var (
 	mutedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#565F89"))
 	panelStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#414868")).Padding(0, 1)
 	chatStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7AA2F7")).Padding(0, 1)
+	userStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#9ECE6A")).Bold(true)
+	zeroStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7AA2F7")).Bold(true)
+	systemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#BB9AF7")).Bold(true)
+	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F7768E")).Bold(true)
+	toolStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#E0AF68")).Bold(true)
 )
 
 func (m Model) View() string {

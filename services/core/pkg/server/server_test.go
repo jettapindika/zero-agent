@@ -49,6 +49,35 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestLocalCORSPreflightForDesktop(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	req, err := http.NewRequest("OPTIONS", ts.URL+"/projects/ensure", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Origin", "http://tauri.localhost")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://tauri.localhost" {
+		t.Fatalf("allow origin = %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Headers"); got == "" {
+		t.Fatal("expected allowed headers")
+	}
+}
+
 func TestCollabFullFlow(t *testing.T) {
 	ts := setupTestServer(t)
 	defer ts.Close()
@@ -296,5 +325,117 @@ func TestSessionAndMessageHTTPFlow(t *testing.T) {
 	resp.Body.Close()
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+}
+
+func TestPatchSessionUpdatesModel(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	body := bytes.NewBufferString(`{"model":"openai/gpt-4o-mini"}`)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/sessions/sess1", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Model != "openai/gpt-4o-mini" {
+		t.Fatalf("model = %q", got.Model)
+	}
+	if got.Title != "test" {
+		t.Fatalf("title should be unchanged, got %q", got.Title)
+	}
+}
+
+func TestPatchSessionRejectsModelWithoutProviderPrefix(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	body := bytes.NewBufferString(`{"model":"gpt-5.5"}`)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/sessions/sess1", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestPatchSessionTitleOnlyStillWorks(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	body := bytes.NewBufferString(`{"title":"Renamed Session"}`)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/sessions/sess1", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got struct {
+		Title string `json:"title"`
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Title != "Renamed Session" {
+		t.Fatalf("title = %q", got.Title)
+	}
+	if got.Model != "anthropic/claude" {
+		t.Fatalf("model should be unchanged, got %q", got.Model)
+	}
+}
+
+func TestPatchSessionRejectsEmptyBody(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	body := bytes.NewBufferString(`{}`)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/sessions/sess1", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestPatchSessionRejectsUnknownAgent(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	body := bytes.NewBufferString(`{"agent":"hacker"}`)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/sessions/sess1", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }

@@ -43,6 +43,19 @@ func (db *DB) GetOrCreateProject(ctx context.Context, path, name string) (*Proje
 	return &p, nil
 }
 
+func (db *DB) GetProject(ctx context.Context, id string) (*Project, error) {
+	row := db.conn.QueryRowContext(ctx, `SELECT id, path, name, created_at, updated_at FROM projects WHERE id = ?`, id)
+	var p Project
+	err := row.Scan(&p.ID, &p.Path, &p.Name, &p.CreatedAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 func (db *DB) GetProjectByPath(ctx context.Context, path string) (*Project, error) {
 	row := db.conn.QueryRowContext(ctx, `SELECT id, path, name, created_at, updated_at FROM projects WHERE path = ?`, path)
 	var p Project

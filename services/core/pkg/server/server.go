@@ -15,6 +15,7 @@ import (
 	"github.com/zero-agent/core/internal/permission"
 	"github.com/zero-agent/core/internal/provider"
 	"github.com/zero-agent/core/internal/storage"
+	"github.com/zero-agent/core/internal/tool"
 )
 
 type Config struct {
@@ -57,13 +58,14 @@ func New(db *storage.DB, eventBus *bus.Bus) *Server {
 	}
 	aiProvider := provider.NewOpenAI(provider.OpenAIConfig{BaseURL: routerBaseURL, APIKey: routerAPIKey})
 	permMgr := permission.NewManager(eventBus)
+	toolExecutor := agent.NewToolExecutor(tool.DefaultRegistry(), permMgr, eventBus)
 
 	s := &Server{
 		db:          db,
 		bus:         eventBus,
 		collab:      collabSvc,
 		collabStore: collabStore,
-		runner:      agent.NewRunner(db, eventBus, aiProvider),
+		runner:      agent.NewRunnerWithExecutor(db, eventBus, aiProvider, toolExecutor),
 		permissions: permMgr,
 	}
 	s.router = s.routes()
@@ -75,6 +77,7 @@ func (s *Server) routes() chi.Router {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
+	r.Use(localCORSMiddleware)
 
 	r.Get("/health", s.handleHealth)
 	r.Get("/events", s.handleSSE)
@@ -84,6 +87,32 @@ func (s *Server) routes() chi.Router {
 	r.Mount("/collab", s.collabRoutes())
 
 	return r
+}
+
+func localCORSMiddleware(next http.Handler) http.Handler {
+	allowedOrigins := map[string]bool{
+		"http://127.0.0.1:3200": true,
+		"http://localhost:3200":  true,
+		"http://tauri.localhost":  true,
+		"tauri://localhost":       true,
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if allowedOrigins[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Zero-Client-ID")
+			w.Header().Set("Vary", "Origin")
+		}
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

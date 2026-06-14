@@ -7,11 +7,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+)
+
+const (
+	maxCommandOutputBytes = 256 * 1024
+	maxFetchOutputBytes   = 512 * 1024
+	maxDangerousTimeout   = 2 * time.Minute
 )
 
 type bashTool struct{}
@@ -37,6 +44,9 @@ func (bashTool) Execute(ctx context.Context, args json.RawMessage, tc Context) (
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	if timeout > maxDangerousTimeout {
+		timeout = maxDangerousTimeout
+	}
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -57,9 +67,13 @@ func (bashTool) Execute(ctx context.Context, args json.RawMessage, tc Context) (
 			return Result{}, err
 		}
 	}
-	output := fmt.Sprintf("exit=%d duration=%dms\n--- stdout ---\n%s", exitCode, duration, stdout.String())
+	output := fmt.Sprintf("exit=%d duration=%dms\n--- stdout ---\n%s", exitCode, duration, truncateOutput(stdout.String(), maxCommandOutputBytes))
 	if stderr.Len() > 0 {
-		output += fmt.Sprintf("\n--- stderr ---\n%s", stderr.String())
+		output += fmt.Sprintf("\n--- stderr ---\n%s", truncateOutput(stderr.String(), maxCommandOutputBytes))
+	}
+	if cmdCtx.Err() == context.DeadlineExceeded {
+		output += fmt.Sprintf("\ncommand timed out after %s", timeout)
+		return Result{Title: input.Command, Output: output, IsError: true}, nil
 	}
 	return Result{Title: input.Command, Output: output, IsError: exitCode != 0}, nil
 }
@@ -82,6 +96,9 @@ func (writeTool) Execute(ctx context.Context, args json.RawMessage, tc Context) 
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return Result{}, err
+	}
+	if input.Path == "" {
+		return Result{}, fmt.Errorf("path required")
 	}
 	abs, err := scopedPath(tc.ProjectPath, input.Path)
 	if err != nil {
@@ -117,6 +134,12 @@ func (editTool) Execute(ctx context.Context, args json.RawMessage, tc Context) (
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return Result{}, err
+	}
+	if input.Path == "" {
+		return Result{}, fmt.Errorf("path required")
+	}
+	if input.OldString == "" {
+		return Result{}, fmt.Errorf("oldString required")
 	}
 	abs, err := scopedPath(tc.ProjectPath, input.Path)
 	if err != nil {
@@ -170,9 +193,28 @@ func (fetchTool) Execute(ctx context.Context, args json.RawMessage, tc Context) 
 	if input.Method == "" {
 		input.Method = "GET"
 	}
+	input.Method = strings.ToUpper(input.Method)
+	switch input.Method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead:
+	default:
+		return Result{}, fmt.Errorf("unsupported HTTP method: %s", input.Method)
+	}
+	parsed, err := url.Parse(input.URL)
+	if err != nil {
+		return Result{}, err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return Result{}, fmt.Errorf("unsupported URL scheme: %s", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return Result{}, fmt.Errorf("URL host required")
+	}
 	timeout := time.Duration(input.Timeout) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 15 * time.Second
+	}
+	if timeout > maxDangerousTimeout {
+		timeout = maxDangerousTimeout
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -185,16 +227,22 @@ func (fetchTool) Execute(ctx context.Context, args json.RawMessage, tc Context) 
 	if err != nil {
 		return Result{}, err
 	}
+	if input.Body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return Result{}, err
 	}
 	defer resp.Body.Close()
-	maxSize := int64(512 * 1024)
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSize))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchOutputBytes+1))
 	if err != nil {
 		return Result{}, err
 	}
-	output := fmt.Sprintf("status=%d\n%s", resp.StatusCode, string(data))
+	body := string(data)
+	if len(data) > maxFetchOutputBytes {
+		body = truncateOutput(body, maxFetchOutputBytes)
+	}
+	output := fmt.Sprintf("status=%d content-type=%s\n%s", resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	return Result{Title: input.URL, Output: output, IsError: resp.StatusCode >= 400}, nil
 }

@@ -3,7 +3,9 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/zero-agent/core/internal/agent"
 	"github.com/zero-agent/core/internal/bus"
@@ -45,6 +47,19 @@ func TestToolExecutorRunsSafeTool(t *testing.T) {
 	}
 }
 
+func TestExecutorToolReasoningInjectionDocumentsPermissionChain(t *testing.T) {
+	for _, want := range []string{
+		"STEP 1 — GOAL",
+		"STEP 4 — PERMISSION: Does this require user approval? (bash/write/edit/fetch = YES)",
+		"RESULT: [What was returned]",
+		"ANOMALY: [What's different from expectations]",
+	} {
+		if !strings.Contains(agent.ExecutorToolReasoningInjection, want) {
+			t.Fatalf("executor injection missing %q", want)
+		}
+	}
+}
+
 func TestToolExecutorReturnsErrorForUnknownTool(t *testing.T) {
 	tools := tool.DefaultRegistry()
 	eventBus := bus.New()
@@ -55,4 +70,55 @@ func TestToolExecutorReturnsErrorForUnknownTool(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for unknown tool")
 	}
+}
+
+func TestToolExecutorDeniesDangerousToolWhenPermissionDenied(t *testing.T) {
+	tools := tool.DefaultRegistry()
+	eventBus := bus.New()
+	perms := permission.NewManager(eventBus)
+	executor := agent.NewToolExecutor(tools, perms, eventBus)
+
+	go func() {
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case <-deadline:
+				return
+			default:
+			}
+			pending := perms.ListPending("s1")
+			if len(pending) > 0 {
+				_ = perms.Resolve(pending[0].ID, permission.DecisionDeny)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	args, _ := json.Marshal(map[string]string{"command": "pwd"})
+	result, err := executor.Execute(context.Background(), t.TempDir(), "p1", "s1", "m1", "bash", args)
+	if err == nil {
+		t.Fatal("expected permission denied error")
+	}
+	if !result.IsError || !strings.Contains(result.Output, "permission denied") {
+		t.Fatalf("unexpected denial result: %#v", result)
+	}
+}
+
+func TestToolExecutorExposesWalkSchema(t *testing.T) {
+	tools := tool.DefaultRegistry()
+	eventBus := bus.New()
+	perms := permission.NewManager(eventBus)
+	executor := agent.NewToolExecutor(tools, perms, eventBus)
+
+	for _, schema := range executor.ToolSchemas() {
+		fn, ok := schema["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if fn["name"] == "walk" {
+			return
+		}
+	}
+	t.Fatalf("walk schema not exposed")
 }

@@ -104,8 +104,43 @@ func (db *DB) ListSessions(ctx context.Context, projectID string) ([]Session, er
 }
 
 func (db *DB) UpdateSession(ctx context.Context, id, title string) (*Session, error) {
+	return db.UpdateSessionFields(ctx, id, SessionPatch{Title: &title})
+}
+
+// SessionPatch is a partial update set; nil fields are ignored.
+type SessionPatch struct {
+	Title *string
+	Model *string
+	Agent *string
+}
+
+// UpdateSessionFields applies any non-nil fields in the patch and returns the
+// refreshed session. At least one field must be non-nil.
+func (db *DB) UpdateSessionFields(ctx context.Context, id string, patch SessionPatch) (*Session, error) {
+	sets := []string{}
+	args := []any{}
+	if patch.Title != nil {
+		sets = append(sets, "title = ?")
+		args = append(args, *patch.Title)
+	}
+	if patch.Model != nil {
+		sets = append(sets, "model = ?")
+		args = append(args, *patch.Model)
+	}
+	if patch.Agent != nil {
+		sets = append(sets, "agent = ?")
+		args = append(args, *patch.Agent)
+	}
+	if len(sets) == 0 {
+		return nil, errors.New("no fields to update")
+	}
 	now := time.Now().UnixMilli()
-	res, err := db.conn.ExecContext(ctx, `UPDATE sessions SET title = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`, title, now, id)
+	sets = append(sets, "updated_at = ?")
+	args = append(args, now)
+	args = append(args, id)
+
+	query := "UPDATE sessions SET " + joinComma(sets) + " WHERE id = ? AND archived_at IS NULL"
+	res, err := db.conn.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +148,17 @@ func (db *DB) UpdateSession(ctx context.Context, id, title string) (*Session, er
 		return nil, ErrNotFound
 	}
 	return db.GetSession(ctx, id)
+}
+
+func joinComma(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += ", "
+		}
+		out += p
+	}
+	return out
 }
 
 func (db *DB) ArchiveSession(ctx context.Context, id string) error {

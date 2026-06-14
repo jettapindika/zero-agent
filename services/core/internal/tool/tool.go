@@ -31,7 +31,7 @@ type Registry struct {
 
 func DefaultRegistry() *Registry {
 	r := &Registry{tools: map[string]Tool{}}
-	for _, t := range []Tool{Read(), Ls(), Glob(), Grep(), Bash(), Write(), Edit(), Fetch()} {
+	for _, t := range []Tool{Read(), Ls(), Glob(), Grep(), Walk(), Bash(), Write(), Edit(), Fetch()} {
 		r.tools[t.Name()] = t
 	}
 	return r

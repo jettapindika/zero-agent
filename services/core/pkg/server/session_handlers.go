@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/zero-agent/core/internal/permission"
@@ -86,13 +87,42 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Title string `json:"title"`
+		Title *string `json:"title,omitempty"`
+		Model *string `json:"model,omitempty"`
+		Agent *string `json:"agent,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	session, err := s.db.UpdateSession(r.Context(), chi.URLParam(r, "id"), req.Title)
+	if req.Title == nil && req.Model == nil && req.Agent == nil {
+		writeError(w, http.StatusBadRequest, "at least one of title, model, or agent is required")
+		return
+	}
+	if req.Title != nil && *req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title must not be empty")
+		return
+	}
+	if req.Model != nil {
+		if *req.Model == "" || !strings.Contains(*req.Model, "/") {
+			writeError(w, http.StatusBadRequest, "model must be in provider/name form, e.g. openai/gpt-4o")
+			return
+		}
+	}
+	if req.Agent != nil {
+		switch *req.Agent {
+		case "build", "plan", "explore":
+		default:
+			writeError(w, http.StatusBadRequest, "agent must be one of build, plan, explore")
+			return
+		}
+	}
+
+	session, err := s.db.UpdateSessionFields(r.Context(), chi.URLParam(r, "id"), storage.SessionPatch{
+		Title: req.Title,
+		Model: req.Model,
+		Agent: req.Agent,
+	})
 	if err != nil {
 		writeStorageError(w, err)
 		return
