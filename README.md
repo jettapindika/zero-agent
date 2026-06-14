@@ -476,25 +476,11 @@ upserted, err := s.store.UpsertUser(...)
 
 Contributions welcome to make this a config-driven knob (e.g. `ZERO_AUTH_ALLOWED_DOMAINS=acme.com,example.org`) — see issue tracker.
 
-### Shared community auth database
+### Supabase Postgres (multi-host shared identity)
 
-**By default, all Zero installs share a community Supabase database.** When you enable `ZERO_AUTH_ENABLED=true`, the daemon connects to a shared Postgres instance where `users` and `auth_sessions` live. This means:
+When auth is on, `users` and `auth_sessions` live in local SQLite at `~/.zero/zero.db` by default. That works fine for a single host with many users.
 
-- Your Google identity is recognized across all your machines (laptop, workstation, etc.)
-- You don't need to set up your own Supabase project
-- The DSN in `.env.example` uses a **restricted role** that can only read/write auth tables — no superuser access, safe to distribute
-
-The community DSN is already configured in `.env.example`:
-
-```bash
-ZERO_SUPABASE_DB_URL=postgresql://zero_auth_user:zero_community_auth_2026@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres
-```
-
-Just enable auth and restart the daemon — you're done.
-
-#### Want isolation? Bring your own Supabase
-
-If you prefer your own private auth database (e.g., for a team deployment or to avoid sharing with the community), create a new Supabase project:
+If you want the **same Google identity to be recognized across multiple Zero hosts** (a personal laptop + a workstation, or a shared team deployment), point all hosts at a single Supabase Postgres project:
 
 ```bash
 supabase login
@@ -561,7 +547,7 @@ bin/               build outputs (zero, zero-server, library)
 | `GOOGLE_CALLBACK_URL` | `http://127.0.0.1:8910/auth/google/callback` | OAuth redirect URI |
 | `SESSION_SECRET` | *(required when auth enabled)* | 32+ byte HMAC key for cookie signing |
 | `DEV_EMAILS` | | Comma-separated list of emails with `role: "dev"` |
-| `ZERO_SUPABASE_DB_URL` | `postgresql://zero_auth_user:...@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres` | Shared community auth database (restricted role, safe to distribute). Override with your own Supabase DSN for isolation. |
+| `ZERO_SUPABASE_DB_URL` | | Supabase Postgres DSN for shared `users` + `auth_sessions` |
 
 ### User config (`~/.zero/config.json`)
 
