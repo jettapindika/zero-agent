@@ -11,6 +11,17 @@ import (
 	"github.com/zero-agent/core/internal/storage"
 )
 
+// AuthStore is the storage surface Service needs. Both the local SQLite
+// storage.DB and the new Supabase Postgres adapter implement it. Keeping this
+// narrow lets us swap backends without touching handlers or tests.
+type AuthStore interface {
+	UpsertUser(ctx context.Context, input storage.UpsertUserInput) (*storage.User, error)
+	CreateAuthSession(ctx context.Context, userID string, ttl time.Duration) (*storage.AuthSession, error)
+	GetAuthSession(ctx context.Context, id string) (*storage.AuthSession, *storage.User, error)
+	DeleteAuthSession(ctx context.Context, id string) error
+	PurgeExpiredAuthSessions(ctx context.Context) (int64, error)
+}
+
 // Service ties OAuth config, cookie secret, dev allowlist, and storage into
 // one object the HTTP handlers can call. Construct with NewService at server
 // startup.
@@ -19,7 +30,7 @@ type Service struct {
 	secret     []byte
 	devEmails  []string
 	enabled    bool
-	db         *storage.DB
+	store      AuthStore
 	httpClient *http.Client
 
 	mu       sync.Mutex
@@ -34,21 +45,28 @@ type pendingFlow struct {
 	createdAt time.Time
 }
 
-// Config holds everything NewService needs.
+// Config holds everything NewService needs. Pass either DB (legacy SQLite) or
+// Store (any AuthStore implementation, e.g. Supabase Postgres). Store wins
+// when both are set.
 type Config struct {
 	OAuth      OAuthConfig
 	Secret     []byte
 	DevEmails  []string
 	Enabled    bool
 	DB         *storage.DB
+	Store      AuthStore
 	HTTPClient *http.Client
 }
 
 // NewService constructs an auth Service. When Enabled is false the middleware
 // behaves as a no-op and the OAuth handlers still work for testing.
 func NewService(cfg Config) (*Service, error) {
-	if cfg.DB == nil {
-		return nil, errors.New("auth: storage DB required")
+	store := cfg.Store
+	if store == nil {
+		if cfg.DB == nil {
+			return nil, errors.New("auth: Store or DB required")
+		}
+		store = cfg.DB
 	}
 	if cfg.Enabled {
 		if err := cfg.OAuth.Validate(); err != nil {
@@ -67,7 +85,7 @@ func NewService(cfg Config) (*Service, error) {
 		secret:     append([]byte(nil), cfg.Secret...),
 		devEmails:  lowercaseAll(cfg.DevEmails),
 		enabled:    cfg.Enabled,
-		db:         cfg.DB,
+		store:      store,
 		httpClient: client,
 		pending:    make(map[string]pendingFlow),
 		maxStore:   64,
@@ -167,7 +185,7 @@ func (s *Service) CompleteFlow(ctx context.Context, state, code string) (session
 		return "", nil, err
 	}
 	role := RoleFor(info.Email, s.devEmails)
-	upserted, err := s.db.UpsertUser(ctx, storage.UpsertUserInput{
+	upserted, err := s.store.UpsertUser(ctx, storage.UpsertUserInput{
 		GoogleID:    info.Sub,
 		Email:       info.Email,
 		DisplayName: info.Name,
@@ -177,7 +195,7 @@ func (s *Service) CompleteFlow(ctx context.Context, state, code string) (session
 	if err != nil {
 		return "", nil, err
 	}
-	sess, err := s.db.CreateAuthSession(ctx, upserted.ID, SessionTTL)
+	sess, err := s.store.CreateAuthSession(ctx, upserted.ID, SessionTTL)
 	if err != nil {
 		return "", nil, err
 	}
@@ -191,7 +209,7 @@ func (s *Service) LookupSession(ctx context.Context, r *http.Request) (*storage.
 	if sid == "" {
 		return nil, nil, nil
 	}
-	sess, user, err := s.db.GetAuthSession(ctx, sid)
+	sess, user, err := s.store.GetAuthSession(ctx, sid)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return nil, nil, nil
@@ -208,12 +226,12 @@ func (s *Service) SignOut(ctx context.Context, r *http.Request) (string, error) 
 	if sid == "" {
 		return "", nil
 	}
-	return sid, s.db.DeleteAuthSession(ctx, sid)
+	return sid, s.store.DeleteAuthSession(ctx, sid)
 }
 
 // PurgeExpired runs the storage purge; intended for a background ticker.
 func (s *Service) PurgeExpired(ctx context.Context) {
-	_, _ = s.db.PurgeExpiredAuthSessions(ctx)
+	_, _ = s.store.PurgeExpiredAuthSessions(ctx)
 }
 
 func lowercaseAll(in []string) []string {

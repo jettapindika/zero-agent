@@ -184,3 +184,47 @@ POST /auth/logout
 
 Sign-out: click the avatar in the topbar → **Sign out**, or call
 `POST /auth/logout` directly.
+
+### Optional: store accounts in Supabase Postgres
+
+By default the `users` and `auth_sessions` tables live in local SQLite
+(`~/.zero/zero.db`). To centralize accounts in Supabase so the same
+`jettabackupacc1@gmail.com` identity follows you across machines:
+
+1. **Sign in to the Supabase CLI** (one-time, from your shell):
+   ```bash
+   supabase login
+   ```
+2. **Link this repo to your Supabase project**:
+   ```bash
+   cd services/core
+   supabase init      # creates services/core/supabase/config.toml
+   supabase link --project-ref nhhglsucankdrmedrxpm
+   ```
+   Migrations live at `services/core/supabase/migrations/00001_auth.sql`
+   and are committed to the repo.
+3. **Push the schema**:
+   ```bash
+   supabase db push
+   ```
+   Or apply directly with `psql "$ZERO_SUPABASE_DB_URL" -f services/core/supabase/migrations/00001_auth.sql`.
+4. **Set the DSN** in your env (Supabase shows it under
+   *Project Settings → Database → Connection string → URI*):
+   ```bash
+   export ZERO_SUPABASE_DB_URL="postgresql://postgres:PASSWORD@db.nhhglsucankdrmedrxpm.supabase.co:5432/postgres"
+   ```
+5. **Relaunch the daemon**. On startup you'll see:
+   ```
+   level=INFO msg="auth backend = supabase postgres" host=db.nhhglsucankdrmedrxpm.supabase.co:5432
+   ```
+   Without `ZERO_SUPABASE_DB_URL`, the log shows
+   `auth backend = local sqlite`.
+
+**Security**:
+- The DSN contains your DB password. Keep it in `~/.config/zero/.env` or
+  your shell rc, never in the desktop bundle. The Tauri app never sees it.
+- Row-Level Security is enabled on both tables; the daemon bypasses RLS
+  by connecting as the postgres role. PostgREST / anon-key access is
+  denied by default.
+- Chat data is intentionally not synced to Supabase. Use S2 in the auth
+  plan if you want full sync (multi-day refactor, not in this commit).

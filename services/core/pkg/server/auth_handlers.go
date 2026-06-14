@@ -7,6 +7,19 @@ import (
 	"github.com/zero-agent/core/internal/auth"
 )
 
+// handleAuthDisabled returns a 503 with a JSON body that tells the operator
+// how to turn login on. Wired by routes() when auth.Service is nil so the
+// /auth/* paths are never silently 404 — the previous behavior made misconfig
+// look like a code bug.
+func handleAuthDisabled(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+		"error": "auth disabled",
+		"hint":  "set ZERO_AUTH_ENABLED=true with GOOGLE_CLIENT_ID/SECRET + SESSION_SECRET, then rebuild and relaunch zero-server",
+		"path":  r.URL.Path,
+		"docs":  "see README section 'Optional: enable Google sign-in on the desktop app'",
+	})
+}
+
 // secureForRequest reports whether the response cookie should set the Secure
 // flag. We set it whenever the request host is NOT a loopback address, so the
 // cookie still works on plain http://127.0.0.1 during local dev but flips to

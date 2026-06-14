@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,6 +122,14 @@ func (s *Server) routes() chi.Router {
 			dev.Get("/dev/runtime", s.handleDevRuntime)
 			dev.Post("/dev/skills/reload", s.handleDevReloadSkills)
 		})
+	} else {
+		// Auth is disabled — register helpful stubs so misconfigured clients
+		// see a clear 503 with remediation, not a silent 404. The stubs share
+		// one handler that explains how to turn auth on.
+		r.Get("/auth/google/start", handleAuthDisabled)
+		r.Get("/auth/google/callback", handleAuthDisabled)
+		r.Get("/auth/me", handleAuthDisabled)
+		r.Post("/auth/logout", handleAuthDisabled)
 	}
 
 	r.Mount("/", s.sessionRoutes())
@@ -351,5 +360,35 @@ func buildAuthService(db *storage.DB) (*auth.Service, error) {
 		Enabled:   true,
 		DB:        db,
 	}
+
+	// When ZERO_SUPABASE_DB_URL is set, route auth-table writes to Supabase
+	// Postgres instead of local SQLite. Chat data still lives in SQLite.
+	if dsn := os.Getenv("ZERO_SUPABASE_DB_URL"); dsn != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		store, err := storage.NewSupabaseAuthStore(ctx, dsn)
+		if err != nil {
+			return nil, fmt.Errorf("supabase auth store: %w", err)
+		}
+		slog.Info("auth backend = supabase postgres", "host", supabaseHost(dsn))
+		cfg.Store = store
+	} else {
+		slog.Info("auth backend = local sqlite")
+	}
+
 	return auth.NewService(cfg)
+}
+
+// supabaseHost extracts the Supabase host from a DSN for logging without
+// leaking the password. Returns "<unknown>" when parsing fails.
+func supabaseHost(dsn string) string {
+	// Look for "@host:" pattern; cheaper than url.Parse and fine for logs.
+	if i := strings.Index(dsn, "@"); i >= 0 {
+		rest := dsn[i+1:]
+		if j := strings.Index(rest, "/"); j >= 0 {
+			return rest[:j]
+		}
+		return rest
+	}
+	return "<unknown>"
 }

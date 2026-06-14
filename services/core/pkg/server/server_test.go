@@ -462,3 +462,40 @@ func TestCancelSessionWhenNothingRunningReturnsFalse(t *testing.T) {
 		t.Fatalf("expected cancelled=false when no run is in flight")
 	}
 }
+
+func TestAuthRoutesReturn503WhenAuthDisabled(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	for _, path := range []string{"/auth/google/start", "/auth/google/callback", "/auth/me"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			resp.Body.Close()
+			t.Fatalf("%s: status = %d, want 503", path, resp.StatusCode)
+		}
+		var got map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&got)
+		resp.Body.Close()
+		if got["error"] != "auth disabled" {
+			t.Fatalf("%s: body error = %v", path, got["error"])
+		}
+	}
+}
+
+func TestAuthLogoutReturns503WhenAuthDisabled(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/logout", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post logout: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}
