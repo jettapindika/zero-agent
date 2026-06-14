@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { open as shellOpen } from '@tauri-apps/plugin-shell';
 
 export type StatusResponse = {
   ok: boolean;
@@ -20,4 +21,7 @@ export const desktop = {
     const selected = await open({ directory: true, multiple: false, title: 'Choose Zero project folder' });
     return typeof selected === 'string' ? selected : null;
   },
+  // Opens the system browser; capability is scoped to http://127.0.0.1:8910/*
+  // so the OAuth start URL is the only thing this can launch.
+  openExternalUrl: (url: string) => shellOpen(url),
 };

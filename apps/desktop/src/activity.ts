@@ -69,8 +69,19 @@ function summarizeResult(raw: unknown): string {
 const THINKING_LINE_RE = /^\s*(?:<think(?:ing)?>|thinking:|thought:|reasoning:|process:)/i;
 const THINKING_END_RE = /<\/think(?:ing)?>/i;
 
-export function useActivityStream(sessionId: string | null, active: boolean) {
+export type LiveAssistant = {
+  messageId: string | null;
+  text: string;
+};
+
+export type ActivityStream = {
+  items: ActivityItem[];
+  live: LiveAssistant;
+};
+
+export function useActivityStream(sessionId: string | null, active: boolean): ActivityStream {
   const [items, setItems] = useState<ActivityItem[]>([]);
+  const [live, setLive] = useState<LiveAssistant>({ messageId: null, text: '' });
   const callIdToActivityId = useRef<Map<string, string>>(new Map());
   const thinkingState = useRef<{ activityId: string | null; buffer: string; inBlock: boolean }>({
     activityId: null,
@@ -81,6 +92,7 @@ export function useActivityStream(sessionId: string | null, active: boolean) {
   useEffect(() => {
     if (!sessionId || !active) {
       setItems([]);
+      setLive({ messageId: null, text: '' });
       callIdToActivityId.current.clear();
       thinkingState.current = { activityId: null, buffer: '', inBlock: false };
       return;
@@ -179,7 +191,7 @@ export function useActivityStream(sessionId: string | null, active: boolean) {
           break;
         }
         case 'part.delta': {
-          const payload = (parsed.payload || {}) as { delta?: string };
+          const payload = (parsed.payload || {}) as { delta?: string; messageId?: string };
           const delta = payload.delta || '';
           if (!delta) break;
 
@@ -224,7 +236,17 @@ export function useActivityStream(sessionId: string | null, active: boolean) {
                 }),
               );
             }
+            break;
           }
+          // Plain answer delta — accumulate into the live assistant card.
+          setLive((current) => {
+            const messageId = payload.messageId ?? current.messageId;
+            // If a new message starts, reset.
+            if (current.messageId && messageId && current.messageId !== messageId) {
+              return { messageId, text: delta };
+            }
+            return { messageId: messageId ?? null, text: current.text + delta };
+          });
           break;
         }
         default:
@@ -244,5 +266,5 @@ export function useActivityStream(sessionId: string | null, active: boolean) {
     };
   }, [sessionId, active]);
 
-  return items;
+  return { items, live };
 }

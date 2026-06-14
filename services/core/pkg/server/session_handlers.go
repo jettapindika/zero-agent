@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -20,6 +21,7 @@ func (s *Server) sessionRoutes() chi.Router {
 	r.Patch("/sessions/{id}", s.handleUpdateSession)
 	r.Delete("/sessions/{id}", s.handleDeleteSession)
 	r.Post("/sessions/{id}/run", s.handleRunSession)
+	r.Post("/sessions/{id}/cancel", s.handleCancelSession)
 	r.Post("/sessions/{id}/revert/{hash}", s.handleRevertSession)
 	r.Get("/sessions/{id}/permissions", s.handleListPermissions)
 	r.Post("/sessions/{id}/permissions/{permissionId}", s.handleResolvePermission)
@@ -146,11 +148,30 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRunSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "id")
-	if err := s.runner.Run(r.Context(), sessionID); err != nil {
+	// Decouple the run from the request context so that a client disconnect
+	// (e.g. fetch aborted on retry) does NOT cancel the run; only an explicit
+	// /cancel call should kill it.
+	ctx, cancel := s.beginRun(context.Background(), sessionID)
+	defer s.endRun(sessionID, cancel)
+	if err := s.runner.Run(ctx, sessionID); err != nil {
+		if errors.Is(err, context.Canceled) {
+			s.bus.Publish("session.status", "", sessionID, map[string]string{"status": "cancelled"})
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "id")
+	cancelled := s.CancelRun(sessionID)
+	if cancelled {
+		s.bus.Publish("session.status", "", sessionID, map[string]string{"status": "cancelled"})
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": cancelled})
 }
 
 func (s *Server) handleRevertSession(w http.ResponseWriter, r *http.Request) {

@@ -1,15 +1,19 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/zero-agent/core/internal/agent"
+	"github.com/zero-agent/core/internal/auth"
 	"github.com/zero-agent/core/internal/bus"
 	"github.com/zero-agent/core/internal/collab"
 	"github.com/zero-agent/core/internal/permission"
@@ -41,10 +45,24 @@ type Server struct {
 	collabStore *collab.Store
 	runner      *agent.Runner
 	permissions *permission.Manager
+	aiProvider  provider.Provider
+	auth        *auth.Service
 	router      chi.Router
+
+	runsMu sync.Mutex
+	runs   map[string]context.CancelFunc // sessionID -> cancel
 }
 
+// New constructs a Server without an auth gate. Existing single-user installs
+// keep working unchanged. Use NewWithAuth to opt into Google login.
 func New(db *storage.DB, eventBus *bus.Bus) *Server {
+	return NewWithAuth(db, eventBus, nil)
+}
+
+// NewWithAuth constructs a Server with an optional auth Service. When the
+// service is nil, behavior is identical to New. When non-nil, /auth/* routes
+// are registered and (if Service.Enabled()) every other route is gated.
+func NewWithAuth(db *storage.DB, eventBus *bus.Bus, authSvc *auth.Service) *Server {
 	collabStore := collab.NewStore(db.Conn())
 	collabSvc := collab.NewService(collabStore, eventBus)
 
@@ -67,6 +85,9 @@ func New(db *storage.DB, eventBus *bus.Bus) *Server {
 		collabStore: collabStore,
 		runner:      agent.NewRunnerWithExecutor(db, eventBus, aiProvider, toolExecutor),
 		permissions: permMgr,
+		aiProvider:  aiProvider,
+		auth:        authSvc,
+		runs:        make(map[string]context.CancelFunc),
 	}
 	s.router = s.routes()
 	return s
@@ -78,11 +99,30 @@ func (s *Server) routes() chi.Router {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(localCORSMiddleware)
+	if s.auth != nil {
+		r.Use(s.auth.RequireAuth)
+	}
 
 	r.Get("/health", s.handleHealth)
 	r.Get("/events", s.handleSSE)
 	r.Get("/openapi.json", s.handleOpenAPI)
+	r.Get("/providers/models", s.handleListModels)
 	r.Post("/projects/ensure", s.handleEnsureProject)
+
+	if s.auth != nil {
+		r.Get("/auth/google/start", s.handleAuthStart)
+		r.Get("/auth/google/callback", s.handleAuthCallback)
+		r.Get("/auth/me", s.handleAuthMe)
+		r.Post("/auth/logout", s.handleAuthLogout)
+
+		// Dev-only routes — require auth + dev role.
+		r.Group(func(dev chi.Router) {
+			dev.Use(s.auth.RequireDev)
+			dev.Get("/dev/runtime", s.handleDevRuntime)
+			dev.Post("/dev/skills/reload", s.handleDevReloadSkills)
+		})
+	}
+
 	r.Mount("/", s.sessionRoutes())
 	r.Mount("/collab", s.collabRoutes())
 
@@ -103,6 +143,9 @@ func localCORSMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Zero-Client-ID")
+			// Cookies must travel from tauri.localhost to 127.0.0.1:8910 so the
+			// auth session cookie reaches the daemon on every fetch.
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Vary", "Origin")
 		}
 
@@ -113,6 +156,63 @@ func localCORSMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// beginRun registers a cancel func for the given session and returns it. If
+// another run is already in flight, the previous one is cancelled first so a
+// fresh /run replaces it.
+func (s *Server) beginRun(parent context.Context, sessionID string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	s.runsMu.Lock()
+	if existing, ok := s.runs[sessionID]; ok {
+		existing()
+	}
+	s.runs[sessionID] = cancel
+	s.runsMu.Unlock()
+	return ctx, cancel
+}
+
+func (s *Server) endRun(sessionID string, cancel context.CancelFunc) {
+	cancel()
+	s.runsMu.Lock()
+	if current, ok := s.runs[sessionID]; ok {
+		// Only delete if the stored cancel matches; otherwise a newer run owns it.
+		// Pointer equality of two CancelFuncs is unreliable across closures, so
+		// always delete here — endRun is only called when our run is finishing.
+		_ = current
+		delete(s.runs, sessionID)
+	}
+	s.runsMu.Unlock()
+}
+
+// CancelRun aborts an in-flight run for the given session. Returns true if a
+// run was cancelled, false if nothing was running.
+func (s *Server) CancelRun(sessionID string) bool {
+	s.runsMu.Lock()
+	defer s.runsMu.Unlock()
+	cancel, ok := s.runs[sessionID]
+	if !ok {
+		return false
+	}
+	cancel()
+	delete(s.runs, sessionID)
+	return true
+}
+
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	if s.aiProvider == nil {
+		writeJSON(w, http.StatusOK, []provider.ModelInfo{})
+		return
+	}
+	models, err := s.aiProvider.ListModels(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if models == nil {
+		models = []provider.ModelInfo{}
+	}
+	writeJSON(w, http.StatusOK, models)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -191,8 +291,65 @@ func Start(cfg Config) error {
 	defer db.Close()
 
 	eventBus := bus.New()
-	srv := New(db, eventBus)
 
-	slog.Info("starting zero server", "port", cfg.Port, "db", cfg.DBPath)
+	// Auth is opt-in via ZERO_AUTH_ENABLED. When unset/false the daemon
+	// behaves exactly as it has historically (single-user, no login screen).
+	authSvc, err := buildAuthService(db)
+	if err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+	srv := NewWithAuth(db, eventBus, authSvc)
+
+	// Background ticker purges expired auth_sessions rows every hour. Cheap
+	// SQL DELETE; safe to run alongside live traffic.
+	if authSvc != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					authSvc.PurgeExpired(context.Background())
+				}
+			}
+		}()
+	}
+
+	slog.Info("starting zero server", "port", cfg.Port, "db", cfg.DBPath, "auth", authSvc != nil)
 	return http.ListenAndServe(":"+cfg.Port, srv)
+}
+
+// buildAuthService reads env vars and constructs an auth.Service. Returns nil
+// (no error) when ZERO_AUTH_ENABLED is unset or false.
+func buildAuthService(db *storage.DB) (*auth.Service, error) {
+	enabled := os.Getenv("ZERO_AUTH_ENABLED") == "true" || os.Getenv("ZERO_AUTH_ENABLED") == "1"
+	if !enabled {
+		return nil, nil
+	}
+
+	callback := os.Getenv("GOOGLE_CALLBACK_URL")
+	if callback == "" {
+		callback = "http://127.0.0.1:8910/auth/google/callback"
+	}
+	secret := os.Getenv("SESSION_SECRET")
+	if secret == "" {
+		return nil, fmt.Errorf("SESSION_SECRET is required when ZERO_AUTH_ENABLED=true")
+	}
+
+	cfg := auth.Config{
+		OAuth: auth.OAuthConfig{
+			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+			ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+			CallbackURL:  callback,
+		},
+		Secret:    []byte(secret),
+		DevEmails: auth.DevEmails(),
+		Enabled:   true,
+		DB:        db,
+	}
+	return auth.NewService(cfg)
 }

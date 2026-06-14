@@ -123,3 +123,64 @@ apps/web          legacy/optional web UI
 config/           config schema
 ```
 # zero-agent
+
+## Optional: enable Google sign-in on the desktop app
+
+Auth is **off by default**. Existing single-user installs keep working with no
+changes. To turn it on:
+
+1. **Create a Google Cloud project** at <https://console.cloud.google.com>.
+2. **Enable the People API** (Google+ API is deprecated; the OIDC userinfo
+   endpoint Zero uses works without People API too, but enabling it is the
+   recommended path).
+3. **Create OAuth 2.0 credentials → Web application** in the
+   *APIs & Services → Credentials* page.
+4. Set the **Authorized redirect URI** to:
+   ```
+   http://127.0.0.1:8910/auth/google/callback
+   ```
+   Loopback (`127.0.0.1`) is exempt from Google's HTTPS requirement, so plain
+   HTTP works for local desktop dev. The `Secure` cookie flag activates
+   automatically when the daemon is exposed off-loopback.
+5. Copy the client id + secret into `~/.config/zero/.env` (or your shell):
+   ```bash
+   GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=...
+   GOOGLE_CALLBACK_URL=http://127.0.0.1:8910/auth/google/callback
+   SESSION_SECRET=$(openssl rand -hex 32)
+   DEV_EMAILS=you@example.com
+   ZERO_AUTH_ENABLED=true
+   ```
+6. Rebuild and relaunch:
+   ```bash
+   make build
+   make desktop-build
+   open apps/desktop/src-tauri/target/release/bundle/macos/Zero.app
+   ```
+
+When `ZERO_AUTH_ENABLED=true`:
+
+- Every non-public route returns `401` until the user signs in.
+- The desktop window shows a centered "Sign in with Google" card.
+- Clicking the button opens the system browser. After consent Google redirects
+  to the daemon, which sets an `httpOnly; SameSite=Lax` session cookie and
+  emits an `auth.signed_in` event on the SSE bus. The desktop window picks
+  this up and re-fetches `/auth/me`.
+- Accounts in `DEV_EMAILS` get `role: "dev"`, see a **DEV MODE** tab in the
+  side panel, and can hit `/dev/runtime` + `/dev/skills/reload`.
+- All other accounts default to `role: "user"`.
+
+Public routes (always reachable without a cookie):
+
+```
+GET  /health
+GET  /openapi.json
+GET  /events
+GET  /auth/google/start
+GET  /auth/google/callback
+GET  /auth/me
+POST /auth/logout
+```
+
+Sign-out: click the avatar in the topbar → **Sign out**, or call
+`POST /auth/logout` directly.

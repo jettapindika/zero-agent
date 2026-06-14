@@ -439,3 +439,26 @@ func TestPatchSessionRejectsUnknownAgent(t *testing.T) {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }
+
+func TestCancelSessionWhenNothingRunningReturnsFalse(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/sessions/sess1/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatalf("post cancel: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Cancelled {
+		t.Fatalf("expected cancelled=false when no run is in flight")
+	}
+}

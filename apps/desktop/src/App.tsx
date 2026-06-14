@@ -1,15 +1,20 @@
-import { Bot, ChevronDown, CircleAlert, CircleCheck, FolderOpen, Loader2, Pencil, Power, Send, Trash2, X } from 'lucide-react';
+import { Bot, Check, ChevronDown, CircleAlert, CircleCheck, Copy, FolderOpen, Loader2, Pencil, Power, Send, Trash2, X } from 'lucide-react';
 import { FormEvent, KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityPanel } from './components/ActivityPanel';
+import { LoginView } from './components/LoginView';
 import { ModelPickerModal } from './components/ModelPickerModal';
+import { SidePanel } from './components/SidePanel';
 import { SlashPreview } from './components/SlashPreview';
-import { TaskPanel } from './components/TaskPanel';
+import { UserChip } from './components/UserChip';
+import { MessageBody, shouldUseStructuredRenderer } from './chat/MessageBody';
 import { useActivityStream } from './activity';
+import { useCurrentUser } from './auth';
 import { useQueueRunner } from './queue';
 import { parseSlashCommand, validateModelId, SLASH_HELP_TEXT } from './slash';
 import { extractTasks } from './tasks';
+import { extractTouchedFiles } from './files';
 import { desktop, type StatusResponse } from './tauri';
-import { createMessage, createSession, deleteSession, ensureProject, listMessages, listSessions, renameSession, runSession, updateSession, type Message, type Project, type Session } from './zero-api';
+import { cancelSession, createMessage, createSession, deleteSession, ensureProject, listMessages, listSessions, renameSession, runSession, updateSession, type AuthUser, type Message, type Project, type Session } from './zero-api';
 
 const DEFAULT_MODEL = 'cx/gpt-5.5';
 const DEFAULT_AGENT = 'build';
@@ -18,7 +23,43 @@ function initialProjectPath() {
   return window.localStorage.getItem('zero.projectPath') || '';
 }
 
+// App is the public entry. It gates on auth state: shows a centered LoginView
+// when the daemon says we're signed out, a skeleton while we're checking, and
+// the full shell once signed in. AppShell holds the existing chat UI; nothing
+// in there changes its single-user mental model.
 export function App() {
+  const auth = useCurrentUser();
+
+  if (auth.state.status === 'loading') {
+    return (
+      <div className="login-shell">
+        <main className="login-card">
+          <p className="login-sub">Connecting to local daemon…</p>
+        </main>
+      </div>
+    );
+  }
+
+  if (auth.state.status === 'signed_out') {
+    return <LoginView onSignIn={auth.signIn} reason={auth.state.reason} />;
+  }
+
+  return (
+    <AppShell
+      currentUser={auth.state.user}
+      isDev={auth.state.isDev}
+      onSignOut={auth.signOut}
+    />
+  );
+}
+
+type AppShellProps = {
+  currentUser: AuthUser;
+  isDev: boolean;
+  onSignOut: () => Promise<void>;
+};
+
+function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
   const [server, setServer] = useState<StatusResponse>({ ok: false, status: 'checking', detail: 'Checking zero-server...' });
   const [provider, setProvider] = useState<StatusResponse>({ ok: false, status: 'checking', detail: 'Checking provider...' });
   const [project, setProject] = useState<Project | null>(null);
@@ -87,10 +128,6 @@ export function App() {
     }
   }, [activeSession?.id, refreshMessages]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, sending, localNotices.length]);
-
   // Keep newest message in view when the window resizes.
   useEffect(() => {
     const node = messagesContainerRef.current;
@@ -149,9 +186,56 @@ export function App() {
   // Live activity stream (server-sent events) while sending.
   const activity = useActivityStream(activeSessionId, sending);
 
-  // Extract task markers from assistant messages.
+  // Auto-scroll to the newest content whenever it grows: messages list change,
+  // sending toggle, local notices, activity rows, or live token stream.
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [
+    messages.length,
+    sending,
+    localNotices.length,
+    activity.items.length,
+    activity.live.text,
+  ]);
+
+  // Extract task markers + touched files from assistant messages.
   const tasks = useMemo(() => extractTasks(messages), [messages]);
-  const showTaskPanel = tasks.length > 0;
+  const touchedFiles = useMemo(() => extractTouchedFiles(messages), [messages]);
+  const showSidePanel = activeSession !== null;
+
+  // Esc-Esc within 500ms cancels the running task and clears the queue.
+  const lastEscRef = useRef<number>(0);
+  useEffect(() => {
+    function onKey(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      // Don't hijack Esc inside a modal/input where the user is editing slash text.
+      const target = event.target as HTMLElement | null;
+      const insideModal = target?.closest('.modal-card');
+      if (insideModal) return;
+      const now = Date.now();
+      if (now - lastEscRef.current < 500) {
+        lastEscRef.current = 0;
+        if (sending && activeSessionId) {
+          void cancelSession(activeSessionId)
+            .then((res) => {
+              if (res.cancelled) {
+                pushNotice('info', 'Run cancelled.');
+              }
+            })
+            .catch((err) => pushNotice('error', `Cancel failed: ${(err as Error).message}`));
+        }
+        if (queue.queued.length > 0) {
+          queue.clear();
+          pushNotice('info', 'Queue cleared.');
+        }
+      } else {
+        lastEscRef.current = now;
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sending, activeSessionId, queue.queued.length, queue.clear]);
 
   async function handleNewSession() {
     if (!project) return;
@@ -247,6 +331,16 @@ export function App() {
     }
   }
 
+  async function applyAgent(sessionId: string, agentId: string) {
+    try {
+      const updated = await updateSession(sessionId, { agent: agentId });
+      setSessions((current) => current.map((s) => (s.id === updated.id ? updated : s)));
+      pushNotice('info', `Agent → ${agentId}.`);
+    } catch (err) {
+      pushNotice('error', (err as Error).message);
+    }
+  }
+
   async function handleSlashCommand(text: string): Promise<boolean> {
     const cmd = parseSlashCommand(text);
     if (!cmd) return false;
@@ -335,12 +429,24 @@ export function App() {
       setPrompt('');
       return;
     }
-    if (event.key === 'Tab' && prompt.trim().startsWith('/') && !prompt.includes(' ')) {
-      event.preventDefault();
-      const head = prompt.trim().toLowerCase();
-      const candidates = ['/model', '/agent', '/clear', '/help'].filter((c) => c.startsWith(head));
-      if (candidates.length === 1) {
-        setPrompt(`${candidates[0]} `);
+    if (event.key === 'Tab') {
+      // Tab inside a slash-only token: complete it.
+      if (prompt.trim().startsWith('/') && !prompt.includes(' ')) {
+        event.preventDefault();
+        const head = prompt.trim().toLowerCase();
+        const candidates = ['/model', '/agent', '/clear', '/help'].filter((c) => c.startsWith(head));
+        if (candidates.length === 1) {
+          setPrompt(`${candidates[0]} `);
+        }
+        return;
+      }
+      // Plain Tab cycles agent on the active session.
+      if (!event.shiftKey && activeSession && prompt === '') {
+        event.preventDefault();
+        const order: Array<'build' | 'plan' | 'explore'> = ['build', 'plan', 'explore'];
+        const currentIdx = order.indexOf(activeSession.agent as 'build' | 'plan' | 'explore');
+        const next = order[(currentIdx + 1) % order.length];
+        void applyAgent(activeSession.id, next);
       }
     }
   }
@@ -352,7 +458,7 @@ export function App() {
           <p className="eyebrow">Zero Desktop</p>
           <h1>Local-first coding agent</h1>
         </div>
-        <p className="header-note">Local daemon starts automatically. Pick a project, create a session, then chat.</p>
+        <UserChip user={currentUser} isDev={isDev} onSignOut={onSignOut} />
       </header>
 
       <section className="status-grid">
@@ -378,7 +484,7 @@ export function App() {
         ))}
       </div>
 
-      <section className={showTaskPanel ? 'workspace has-tasks' : 'workspace'}>
+      <section className={showSidePanel ? 'workspace has-tasks' : 'workspace'}>
         <aside className="sessions">
           <form className="project-form" onSubmit={handleUseProject}>
             <label htmlFor="project-path">Project path</label>
@@ -399,7 +505,15 @@ export function App() {
             <h2>Sessions</h2>
             <button type="button" onClick={handleNewSession} disabled={!project || busy}>New</button>
           </div>
-          {sessions.length === 0 ? <p className="muted">Start the server, then create a session.</p> : null}
+          {sessions.length === 0 ? (
+            <p className="muted">
+              {!server.ok
+                ? 'Waiting for the local daemon to come online…'
+                : !project
+                  ? 'Pick a project folder above, then click "Use project".'
+                  : 'No sessions yet. Click "New" to start one.'}
+            </p>
+          ) : null}
           {sessions.map((session) => (
             <div className={session.id === activeSession?.id ? 'session-row active' : 'session-row'} key={session.id}>
               <button
@@ -423,9 +537,15 @@ export function App() {
         </aside>
 
         <section className="chat">
+          {sending ? (
+            <div className="chat-banner" role="status" aria-live="polite">
+              Press <kbd>Esc</kbd> twice to abort the run.
+            </div>
+          ) : null}
           <div className="messages" ref={messagesContainerRef}>
             {messages.length === 0 ? <EmptyState server={server} provider={provider} /> : messages.map((message) => <MessageCard key={message.id} message={message} />)}
-            {sending ? <ActivityPanel items={activity} startedAt={sendingStartedAt} /> : null}
+            {sending ? <ActivityPanel items={activity.items} startedAt={sendingStartedAt} /> : null}
+            {sending && activity.live.text ? <LiveAssistantCard text={activity.live.text} /> : null}
             <div ref={messagesEndRef} />
           </div>
           {queue.queued.length > 0 || queueWarning ? (
@@ -465,7 +585,31 @@ export function App() {
           </form>
           </div>
         </section>
-        {showTaskPanel ? <TaskPanel tasks={tasks} /> : null}
+        {showSidePanel && activeSession ? (
+          <SidePanel
+            files={touchedFiles}
+            isDev={isDev}
+            onCancel={() => {
+              if (activeSession) {
+                void cancelSession(activeSession.id).then((res) => {
+                  if (res.cancelled) pushNotice('info', 'Run cancelled.');
+                });
+              }
+            }}
+            onModelClick={() => setModelPickerOpen(true)}
+            onRenameSession={() => handleRenameSession(activeSession)}
+            onSendQueueClear={() => {
+              queue.clear();
+              pushNotice('info', 'Queue cleared.');
+            }}
+            sending={sending}
+            sessionAgent={activeSession.agent}
+            sessionId={activeSession.id}
+            sessionModel={activeSession.model}
+            startedAt={sendingStartedAt}
+            tasks={tasks}
+          />
+        ) : null}
       </section>
       <ModelPickerModal
         currentModel={activeSession?.model ?? ''}
@@ -486,7 +630,7 @@ function StatusCard({ title, status }: { title: string; status: StatusResponse }
       <div>
         <p className="label">{title}</p>
         <p className="value">{status.ok ? 'Connected' : status.status}</p>
-        <p className="detail">{status.detail}</p>
+        {status.ok ? null : <p className="detail">{status.detail}</p>}
       </div>
     </div>
   );
@@ -504,20 +648,91 @@ function EmptyState({ server, provider }: { server: StatusResponse; provider: St
 }
 
 function MessageCard({ message }: { message: Message }) {
-  const parts = splitThinking(message.parts.map((part) => part.text ?? part.type).join('\n'));
+  const fullText = message.parts.map((part) => part.text ?? part.type).join('\n');
+  const parts = splitThinking(fullText);
+  const isAssistant = message.role !== 'user';
+  const answerText = parts.answer.join('\n');
+  const useStructured = isAssistant && shouldUseStructuredRenderer(answerText);
 
   return (
     <article className={message.role === 'user' ? 'message user' : 'message assistant'}>
-      <p className="role">{message.role}</p>
+      <header className="message-head">
+        <p className="role">{message.role}</p>
+        {isAssistant && answerText.trim() !== '' ? (
+          <CopyButton text={answerText} label="Copy response" />
+        ) : null}
+      </header>
       {parts.thinking.length > 0 ? <ThinkingBlock lines={parts.thinking} /> : null}
       <div className="message-content">
-        {parseMessageBlocks(parts.answer).map((block, index) => (
-          block.type === 'code'
-            ? <CodeBlock block={block} key={`${message.id}-${index}`} />
-            : <MessageLine key={`${message.id}-${index}`} line={block.text} />
-        ))}
+        {useStructured ? (
+          <MessageBody
+            text={answerText}
+            renderInline={(t) => renderInlineRichText(t)}
+            renderCode={(language, lines) => (
+              <CodeBlock block={{ type: 'code', language, lines }} />
+            )}
+            renderProseLine={(line) => <MessageLine line={line} />}
+          />
+        ) : (
+          parseMessageBlocks(parts.answer).map((block, index) => (
+            block.type === 'code'
+              ? <CodeBlock block={block} key={`${message.id}-${index}`} />
+              : <MessageLine key={`${message.id}-${index}`} line={block.text} />
+          ))
+        )}
       </div>
     </article>
+  );
+}
+
+function LiveAssistantCard({ text }: { text: string }) {
+  const parts = splitThinking(text);
+  const answerText = parts.answer.join('\n');
+  const useStructured = shouldUseStructuredRenderer(answerText);
+  return (
+    <article className="message assistant live">
+      <header className="message-head">
+        <p className="role">assistant <span className="live-pill">streaming</span></p>
+      </header>
+      {parts.thinking.length > 0 ? <ThinkingBlock lines={parts.thinking} /> : null}
+      <div className="message-content">
+        {useStructured ? (
+          <MessageBody
+            text={answerText}
+            renderInline={(t) => renderInlineRichText(t)}
+            renderCode={(language, lines) => (
+              <CodeBlock block={{ type: 'code', language, lines }} />
+            )}
+            renderProseLine={(line) => <MessageLine line={line} />}
+          />
+        ) : (
+          parseMessageBlocks(parts.answer).map((block, index) => (
+            block.type === 'code'
+              ? <CodeBlock block={block} key={`live-${index}`} />
+              : <MessageLine key={`live-${index}`} line={block.text} />
+          ))
+        )}
+      </div>
+    </article>
+  );
+}
+
+function CopyButton({ text, label = 'Copy', size = 14 }: { text: string; label?: string; size?: number }) {
+  const [copied, setCopied] = useState(false);
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.error('clipboard write failed', err);
+    }
+  }
+  return (
+    <button aria-label={label} className="copy-button" onClick={handleCopy} title={label} type="button">
+      {copied ? <Check size={size} /> : <Copy size={size} />}
+      <span>{copied ? 'Copied' : 'Copy'}</span>
+    </button>
   );
 }
 
@@ -560,12 +775,16 @@ function parseMessageBlocks(lines: string[]): MessageBlock[] {
 function CodeBlock({ block }: { block: Extract<MessageBlock, { type: 'code' }> }) {
   const language = block.language || 'text';
   const isDiff = /^(diff|patch)$/i.test(language) || block.lines.some((line) => /^[-+]/.test(line));
+  const code = block.lines.join('\n');
 
   return (
     <figure className={isDiff ? 'code-panel diff-panel' : 'code-panel'}>
       <figcaption>
         <span>{isDiff ? 'Modified code' : 'Code'}</span>
-        <small>{language}</small>
+        <div className="code-meta">
+          <small>{language}</small>
+          <CopyButton text={code} label="Copy code" />
+        </div>
       </figcaption>
       <pre>
         {block.lines.map((line, index) => {
@@ -622,11 +841,42 @@ function ThinkingBlock({ lines }: { lines: string[] }) {
   );
 }
 
+// SECTION_TITLE matches lines like "TASK ANALYSIS:", "Plan:", "ROOT CAUSE:" —
+// 1-4 capitalized words ending with a colon, optionally followed by content.
+const SECTION_TITLE_RE = /^([A-Z][A-Za-z0-9 _\-]{1,40}:)(\s|$)/;
+
+// CONFIRMATION_LINE matches lines where Zero is asking for confirmation:
+//   "Also confirm: may I run java -version?"
+//   "Confirm: shall I proceed?"
+//   "Approve?", "Should I continue?", "Ready to implement. Shall I proceed?"
+const CONFIRMATION_RE = /(?:^(?:also\s+)?confirm[: ]|^(?:may|can|should|shall)\s+i\b|\bapprove\?|\bshall i proceed\?|\bproceed\?)/i;
+
 function MessageLine({ line }: { line: string }) {
   if (line.trim() === '') return <div className="message-spacer" />;
   const trimmed = line.trimStart();
   const isList = /^[-*]\s+/.test(trimmed);
   const isNumbered = /^\d+[.)]\s+/.test(trimmed);
+  const sectionMatch = trimmed.match(SECTION_TITLE_RE);
+  const isConfirm = CONFIRMATION_RE.test(trimmed) && trimmed.includes('?');
+
+  if (sectionMatch) {
+    const title = sectionMatch[1];
+    const rest = trimmed.slice(title.length);
+    return (
+      <p className="message-line section-title">
+        <strong>{title}</strong>
+        {rest ? renderInlineRichText(rest) : null}
+      </p>
+    );
+  }
+
+  if (isConfirm) {
+    return (
+      <p className="message-line confirm-line">
+        {renderInlineRichText(line)}
+      </p>
+    );
+  }
 
   return (
     <p className={isList || isNumbered ? 'message-line list-line' : 'message-line'}>

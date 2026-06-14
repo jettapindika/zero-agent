@@ -1,17 +1,48 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { listModels } from '../zero-api';
 
-// Curated model catalog. Keep IDs in `provider/name` form so the backend
-// validator accepts them.
-const MODELS: { id: string; provider: string; label: string; description?: string }[] = [
+// Curated fallback used only when the live /providers/models endpoint is
+// unreachable. Always provider/name format so the backend validator accepts.
+const FALLBACK_MODELS: ModelEntry[] = [
   { id: 'cx/gpt-5.5', provider: '9router', label: 'GPT-5.5 (cx)', description: 'Default fast local-router model.' },
   { id: 'kr/claude-sonnet-4.5', provider: '9router', label: 'Claude Sonnet 4.5 (kr)', description: 'Strong reasoning via 9router.' },
-  { id: 'openai/gpt-4o', provider: 'OpenAI', label: 'GPT-4o', description: 'OpenAI flagship.' },
-  { id: 'openai/gpt-4o-mini', provider: 'OpenAI', label: 'GPT-4o mini', description: 'Cheaper OpenAI tier.' },
-  { id: 'anthropic/claude-sonnet-4-5', provider: 'Anthropic', label: 'Claude Sonnet 4.5', description: 'Anthropic flagship.' },
-  { id: 'anthropic/claude-haiku-4-5', provider: 'Anthropic', label: 'Claude Haiku 4.5', description: 'Cheaper Anthropic tier.' },
-  { id: 'ollama/llama3.1', provider: 'Ollama', label: 'Llama 3.1 (local)', description: 'Local model via Ollama.' },
+  { id: 'openai/gpt-4o', provider: 'OpenAI', label: 'GPT-4o' },
+  { id: 'openai/gpt-4o-mini', provider: 'OpenAI', label: 'GPT-4o mini' },
+  { id: 'anthropic/claude-sonnet-4-5', provider: 'Anthropic', label: 'Claude Sonnet 4.5' },
 ];
+
+type ModelEntry = {
+  id: string;
+  provider: string;
+  label: string;
+  description?: string;
+};
+
+function inferProvider(modelId: string): string {
+  const slash = modelId.indexOf('/');
+  if (slash <= 0) return 'unknown';
+  const prefix = modelId.slice(0, slash).toLowerCase();
+  switch (prefix) {
+    case 'openai':
+      return 'OpenAI';
+    case 'anthropic':
+      return 'Anthropic';
+    case 'ollama':
+      return 'Ollama';
+    case 'kr':
+    case 'cx':
+      return '9router';
+    default:
+      return prefix;
+  }
+}
+
+function inferLabel(modelId: string): string {
+  const slash = modelId.indexOf('/');
+  if (slash <= 0) return modelId;
+  return modelId.slice(slash + 1);
+}
 
 export type ModelPickerModalProps = {
   open: boolean;
@@ -23,25 +54,58 @@ export type ModelPickerModalProps = {
 export function ModelPickerModal({ open, currentModel, onClose, onSelect }: ModelPickerModalProps) {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
+  const [models, setModels] = useState<ModelEntry[]>(FALLBACK_MODELS);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (open) {
-      setQuery('');
-      setActiveIndex(0);
-      // Defer focus so transition doesn't steal it.
-      const id = window.setTimeout(() => inputRef.current?.focus(), 30);
-      return () => window.clearTimeout(id);
-    }
+    if (!open) return;
+    setQuery('');
+    setActiveIndex(0);
+    setLoadError(null);
+    // Defer focus so transition doesn't steal it.
+    const focusId = window.setTimeout(() => inputRef.current?.focus(), 30);
+
+    let cancelled = false;
+    setLoading(true);
+    listModels()
+      .then((live) => {
+        if (cancelled) return;
+        if (!live || live.length === 0) {
+          setModels(FALLBACK_MODELS);
+          setLoadError('Provider returned no models; showing curated fallback.');
+          return;
+        }
+        const mapped: ModelEntry[] = live.map((m) => ({
+          id: m.id,
+          provider: inferProvider(m.id),
+          label: m.name || inferLabel(m.id),
+        }));
+        setModels(mapped);
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setModels(FALLBACK_MODELS);
+        setLoadError(`Live model list unreachable: ${err.message}. Showing curated fallback.`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(focusId);
+    };
   }, [open]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return MODELS;
-    return MODELS.filter(
+    if (!q) return models;
+    return models.filter(
       (m) => m.id.toLowerCase().includes(q) || m.label.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q),
     );
-  }, [query]);
+  }, [query, models]);
 
   useEffect(() => {
     if (activeIndex >= filtered.length) setActiveIndex(0);
@@ -82,7 +146,7 @@ export function ModelPickerModal({ open, currentModel, onClose, onSelect }: Mode
         <header className="modal-header">
           <div>
             <p className="eyebrow">Switch model</p>
-            <h2>Select an AI model</h2>
+            <h2>{loading ? 'Loading models…' : `Select an AI model (${models.length})`}</h2>
           </div>
           <button aria-label="Close" className="modal-close" onClick={onClose} type="button">
             <X size={16} />
@@ -92,10 +156,11 @@ export function ModelPickerModal({ open, currentModel, onClose, onSelect }: Mode
           className="modal-search"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Filter by name, id, or provider…"
+          placeholder={loading ? 'Loading…' : 'Filter by name, id, or provider…'}
           ref={inputRef}
           value={query}
         />
+        {loadError ? <p className="modal-warn">{loadError}</p> : null}
         <ul className="modal-list">
           {filtered.length === 0 ? <li className="modal-empty">No models match &quot;{query}&quot;.</li> : null}
           {filtered.map((model, index) => {

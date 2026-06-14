@@ -46,9 +46,16 @@ func TestDefaultBuildAgentUsesTerminalLocalFirstSystemPrompt(t *testing.T) {
 		"Dangerous tools: bash, write, edit, fetch; these require permission.",
 		"Project: {project_path}",
 		"Session goal: {user_prompt}",
-		"==text== or [highlight]text[/highlight]",
 		"[color=red]text[/color]",
 		"[color=green]text[/color]",
+		"Numbered steps",
+		"Action lines",
+		"Bullet items",
+		"Reasoning prose",
+		"Phase headers",
+		"Background task log",
+		"→ Read",
+		"[task]",
 	} {
 		if !strings.Contains(build.SystemPrompt, want) {
 			t.Fatalf("build prompt missing %q", want)

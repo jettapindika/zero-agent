@@ -34,7 +34,42 @@ func (p *OpenAI) Name() string {
 }
 
 func (p *OpenAI) ListModels(ctx context.Context) ([]ModelInfo, error) {
-	return []ModelInfo{{ID: "openai/gpt-4o-mini", Name: "gpt-4o-mini"}, {ID: "openai/gpt-4o", Name: "gpt-4o"}}, nil
+	// 9router exposes a standard OpenAI-style /models endpoint. Hit it live so
+	// the desktop sees whatever the running router actually serves.
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	p.applyHeaders(httpReq)
+	res, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("openai list models failed: %s", res.Status)
+	}
+	var payload struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	out := make([]ModelInfo, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		if m.ID == "" {
+			continue
+		}
+		name := m.ID
+		if _, after, ok := strings.Cut(m.ID, "/"); ok {
+			name = after
+		}
+		out = append(out, ModelInfo{ID: m.ID, Name: name})
+	}
+	return out, nil
 }
 
 // buildRequestBody assembles an OpenAI-compatible chat completion request body.

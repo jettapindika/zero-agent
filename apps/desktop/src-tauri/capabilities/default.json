@@ -3,5 +3,12 @@
   "identifier": "default",
   "description": "Default permissions for the main desktop window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [{ "url": "http://127.0.0.1:8910/*" }]
+    }
+  ]
 }

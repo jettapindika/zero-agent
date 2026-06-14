@@ -6,6 +6,10 @@ export type Part = {
   type: string;
   orderNum: number;
   text?: string | null;
+  toolName?: string | null;
+  toolCallId?: string | null;
+  toolArgsJson?: string | null;
+  toolResultJson?: string | null;
   isError: boolean;
   createdAt: number;
 };
@@ -39,6 +43,7 @@ export type Project = {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...init?.headers,
@@ -115,3 +120,84 @@ export async function createMessage(sessionId: string, role: string, text: strin
 export async function runSession(sessionId: string): Promise<void> {
   await request<void>(`/sessions/${encodeURIComponent(sessionId)}/run`, { method: 'POST' });
 }
+
+export async function cancelSession(sessionId: string): Promise<{ cancelled: boolean }> {
+  return request<{ cancelled: boolean }>(`/sessions/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST' });
+}
+
+export type ProviderModel = {
+  id: string;
+  name: string;
+};
+
+export async function listModels(): Promise<ProviderModel[]> {
+  return request<ProviderModel[]>('/providers/models');
+}
+
+export type PermissionRequest = {
+  id: string;
+  sessionId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  decision: string;
+};
+
+export async function listPermissions(sessionId: string): Promise<PermissionRequest[]> {
+  return request<PermissionRequest[]>(`/sessions/${encodeURIComponent(sessionId)}/permissions`);
+}
+
+export async function resolvePermission(
+  sessionId: string,
+  permissionId: string,
+  decision: 'allow_once' | 'always_allow' | 'deny',
+): Promise<void> {
+  await request<void>(
+    `/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}`,
+    { method: 'POST', body: JSON.stringify({ decision }) },
+  );
+}
+
+export type AuthUser = {
+  id: string;
+  googleId: string;
+  email: string;
+  displayName: string;
+  avatarUrl: string;
+  role: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type AuthMeResponse = {
+  user: AuthUser;
+  isDev: boolean;
+  sessionId: string;
+  expiresAtMs: number;
+};
+
+export class AuthRequiredError extends Error {
+  constructor() {
+    super('authentication required');
+    this.name = 'AuthRequiredError';
+  }
+}
+
+// authMe is special-cased: a 401 is the normal "not signed in" state, not an
+// error worth bubbling. Caller distinguishes via AuthRequiredError.
+export async function authMe(): Promise<AuthMeResponse> {
+  const response = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+  if (response.status === 401 || response.status === 404) {
+    throw new AuthRequiredError();
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `auth/me HTTP ${response.status}`);
+  }
+  return (await response.json()) as AuthMeResponse;
+}
+
+export async function authLogout(): Promise<void> {
+  await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+}
+
+export const AUTH_START_URL = `${API_BASE}/auth/google/start`;
