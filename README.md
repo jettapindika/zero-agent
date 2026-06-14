@@ -423,22 +423,32 @@ Off by default. Turn it on when you want the daemon to gate `/sessions/*`, `/pro
 
 ### Setup
 
-1. Create a Google Cloud project at <https://console.cloud.google.com> → Enable the People API.
-2. *APIs & Services → Credentials* → **Create OAuth 2.0 → Web Application**.
-   Set Authorized redirect URI to `http://127.0.0.1:8910/auth/google/callback`.
-   (Loopback is exempt from Google's HTTPS requirement.)
-3. Copy the credentials into `~/.config/zero/.env`:
+**The Google OAuth client is bundled with Zero** — you do **not** need to create your own Google Cloud project. Zero ships a [Desktop application](https://developers.google.com/identity/protocols/oauth2/native-app) OAuth client whose `client_secret` is, per Google's docs, "not treated as a secret" (PKCE protects the flow regardless).
+
+To enable Google sign-in, add three lines to `~/.config/zero/.env`:
+
+```bash
+ZERO_AUTH_ENABLED=true
+SESSION_SECRET=$(openssl rand -hex 32)
+DEV_EMAILS=you@example.com           # optional, comma-separated
+```
+
+Then `zero restart`. That's it.
+
+#### Bring your own Google OAuth client (optional)
+
+If you want full control over the OAuth consent screen — your project name on the consent prompt, your privacy policy URL, your verification status — create your own client:
+
+1. Google Cloud Console → **APIs & Services → Credentials** → **Create OAuth 2.0 → Desktop application**.
+2. (No redirect URIs to configure — Google accepts any `http://127.0.0.1:<port>/...` for Desktop clients.)
+3. Add the credentials to `~/.config/zero/.env`:
 
    ```bash
-   ZERO_AUTH_ENABLED=true
    GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET=...
-   GOOGLE_CALLBACK_URL=http://127.0.0.1:8910/auth/google/callback
-   SESSION_SECRET=$(openssl rand -hex 32)
-   DEV_EMAILS=you@example.com           # optional, comma-separated
+   GOOGLE_CLIENT_SECRET=<your-secret>
    ```
 
-4. Restart the daemon: `zero restart`.
+4. `zero restart`. Your `.env` overrides the bundled defaults.
 
 ### What changes when `ZERO_AUTH_ENABLED=true`
 

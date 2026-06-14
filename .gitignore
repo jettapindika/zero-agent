@@ -37,6 +37,12 @@ apps/cli/zero-server
 .opencode-context.md
 .multibrain/
 
+# Build-time injected secrets (Google OAuth client). The Makefile reads this
+# file and passes the values via `go build -ldflags -X` so they end up in the
+# release binary without ever appearing in source-controlled files. Keeping
+# them out of git also satisfies GitHub Push Protection.
+.build-secrets
+
 # OpenCode/Zero session context (per-machine, not for VCS)
 .opencode-jce/
 .opencode-context-archive.md

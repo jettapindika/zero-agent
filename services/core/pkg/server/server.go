@@ -359,6 +359,26 @@ func Start(cfg Config) error {
 	return http.ListenAndServe(":"+cfg.Port, srv)
 }
 
+// Bundled Google OAuth client values, injected at build time via
+// `-ldflags "-X github.com/zero-agent/core/pkg/server.defaultGoogleClientID=...
+//           -X github.com/zero-agent/core/pkg/server.defaultGoogleClientSecret=..."`.
+// See the `build` target in Makefile and the `.build-secrets` file (gitignored)
+// for the actual values shipped with release binaries.
+//
+// Why ldflags and not const literals: Google's "Desktop application" OAuth
+// client_secret is, per their docs, not treated as a secret — but GitHub's
+// secret-scanning push protection still flags the literal in source. Keeping
+// the values out of git also keeps them out of forks' history and makes
+// rotation a build-config change instead of a source-code change.
+//
+// When unset (e.g., a contributor builds from source without the secrets
+// file), env vars GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are still honored,
+// so the BYO-Google-client path keeps working.
+var (
+	defaultGoogleClientID     = ""
+	defaultGoogleClientSecret = ""
+)
+
 // buildAuthService reads env vars and constructs an auth.Service. Returns nil
 // (no error) when ZERO_AUTH_ENABLED is unset or false.
 func buildAuthService(db *storage.DB) (*auth.Service, error) {
@@ -376,10 +396,19 @@ func buildAuthService(db *storage.DB) (*auth.Service, error) {
 		return nil, fmt.Errorf("SESSION_SECRET is required when ZERO_AUTH_ENABLED=true")
 	}
 
+	clientID := os.Getenv("GOOGLE_CLIENT_ID")
+	if clientID == "" {
+		clientID = defaultGoogleClientID
+	}
+	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	if clientSecret == "" {
+		clientSecret = defaultGoogleClientSecret
+	}
+
 	cfg := auth.Config{
 		OAuth: auth.OAuthConfig{
-			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-			ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
 			CallbackURL:  callback,
 		},
 		Secret:    []byte(secret),

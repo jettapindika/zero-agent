@@ -187,17 +187,23 @@ ZERO_ROUTER_API_KEY=
 
 # ----------------------------------------------------------------------------
 # Multi-user mode (Google sign-in). Off by default → single-user, no login.
-# Turn on by setting ZERO_AUTH_ENABLED=true plus the four Google fields below.
+# To enable: uncomment ZERO_AUTH_ENABLED and SESSION_SECRET below. The Google
+# OAuth client is bundled with Zero — you don't need your own Google Cloud
+# project. (Override with your own GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+# if you want full control over the OAuth consent screen.)
+#
 # When enabled, ANY Google account can sign in — the daemon upserts a row in
 # the users table on first login (role: "user"). DEV_EMAILS is for elevated
 # role assignment only, not for restricting who can sign in.
 # ----------------------------------------------------------------------------
 # ZERO_AUTH_ENABLED=true
+# SESSION_SECRET=                     # generate: openssl rand -hex 32
+# DEV_EMAILS=                         # comma-separated, optional
+#
+# Optional overrides (defaults are bundled):
 # GOOGLE_CLIENT_ID=
 # GOOGLE_CLIENT_SECRET=
 # GOOGLE_CALLBACK_URL=http://127.0.0.1:8910/auth/google/callback
-# SESSION_SECRET=
-# DEV_EMAILS=                         # comma-separated, optional
 
 # ----------------------------------------------------------------------------
 # Optional: Supabase Postgres backs the multi-user auth tables. When set, the

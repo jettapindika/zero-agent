@@ -4,6 +4,18 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 APPDIR ?= $(HOME)/Applications
 
+# Build-time secrets are sourced from .build-secrets (gitignored). When the
+# file is missing (fresh OSS clone, contributor build) ldflags is empty and
+# the daemon falls back to env vars / BYO Google OAuth client.
+SERVER_PKG := github.com/zero-agent/core/pkg/server
+ifneq (,$(wildcard .build-secrets))
+GOOGLE_CLIENT_ID     := $(shell . ./.build-secrets && printf %s $$GOOGLE_CLIENT_ID)
+GOOGLE_CLIENT_SECRET := $(shell . ./.build-secrets && printf %s $$GOOGLE_CLIENT_SECRET)
+LDFLAGS              := -X '$(SERVER_PKG).defaultGoogleClientID=$(GOOGLE_CLIENT_ID)' -X '$(SERVER_PKG).defaultGoogleClientSecret=$(GOOGLE_CLIENT_SECRET)'
+else
+LDFLAGS              :=
+endif
+
 run: build
 	./bin/zero
 
@@ -11,8 +23,8 @@ dev: build
 	./bin/zero
 
 build:
-	go build -o bin/zero ./apps/cli
-	go build -o bin/zero-server ./services/core/cmd/server
+	go build -ldflags "$(LDFLAGS)" -o bin/zero ./apps/cli
+	go build -ldflags "$(LDFLAGS)" -o bin/zero-server ./services/core/cmd/server
 
 library:
 	go build -o bin/library ./tools/library/cmd/library
