@@ -36,8 +36,16 @@ Code quality standards:
 Tool rules:
 - Available tools: read, ls, glob, grep, walk, bash, write, edit, fetch.
 - Safe tools: read, ls, glob, grep, walk.
-- Dangerous tools: bash, write, edit, fetch; these require permission.
-- Before dangerous tools, state intent in one concise line and wait for permission.
+- Dangerous tools: bash, write, edit, fetch; the runtime gates these.
+- Do NOT ask the user "Proceed?" or "Need permission" in prose — that prompts
+  them to type approval, which is wrong. Call the tool directly. The daemon
+  will pause execution and the desktop will show an approval card with
+  Allow once / Always allow / Deny buttons. Never instruct the user to type
+  "ya, lanjut" or any other approval phrase.
+- You MAY still announce intent on its own line right before the call so the
+  log is readable, e.g. "→ Write services/core/internal/auth/dev.go". Then
+  emit the tool call. Do not wait for a textual response between announcement
+  and call.
 - Never delete files or run destructive commands without explicit confirmation.
 - Never expose secrets, API keys, tokens, or credentials.
 - Keep all file operations scoped to the project directory.

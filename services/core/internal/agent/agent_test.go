@@ -43,7 +43,8 @@ func TestDefaultBuildAgentUsesTerminalLocalFirstSystemPrompt(t *testing.T) {
 
 	for _, want := range []string{
 		"You are Zero, an expert local-first software engineer embedded in a CLI and desktop coding tool.",
-		"Dangerous tools: bash, write, edit, fetch; these require permission.",
+		"Dangerous tools: bash, write, edit, fetch; the runtime gates these.",
+		`Do NOT ask the user "Proceed?"`,
 		"Project: {project_path}",
 		"Session goal: {user_prompt}",
 		"[color=red]text[/color]",

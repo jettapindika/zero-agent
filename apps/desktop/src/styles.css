@@ -60,10 +60,10 @@ button:disabled {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 12px;
+  gap: 18px;
   min-height: 0;
   overflow: hidden;
-  padding: 14px;
+  padding: 16px 16px 14px;
 }
 
 /* Make the workspace always claim every leftover pixel, regardless of how
@@ -147,7 +147,7 @@ h1 {
   gap: 12px;
   grid-template-columns: 1fr 1fr 1fr;
   position: sticky;
-  top: 84px;
+  top: 90px;
   z-index: 4;
 }
 

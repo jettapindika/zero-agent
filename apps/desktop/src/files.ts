@@ -5,17 +5,21 @@ import type { Message } from './zero-api';
 
 export type TouchedFile = {
   path: string;
-  ops: ('read' | 'write' | 'edit' | 'glob' | 'grep' | 'walk')[];
+  ops: ('read' | 'write' | 'edit' | 'glob' | 'grep' | 'walk' | 'ls' | 'fetch')[];
   lastTouched: number;
 };
 
-const READ_TOOLS = new Set(['read', 'glob', 'grep', 'walk', 'ls']);
+const READ_TOOLS = new Set(['read', 'glob', 'grep', 'walk', 'ls', 'fetch']);
 const WRITE_TOOLS = new Set(['write', 'edit']);
 
-function pickPath(args: unknown): string | null {
+const TOOLS_WHERE_PATTERN_IS_REGEX = new Set(['grep']);
+
+function pickPath(tool: string, args: unknown): string | null {
   if (!args || typeof args !== 'object') return null;
   const a = args as Record<string, unknown>;
-  for (const key of ['path', 'file', 'filename', 'pattern']) {
+  const candidates = ['path', 'file', 'filename', 'url'];
+  if (!TOOLS_WHERE_PATTERN_IS_REGEX.has(tool)) candidates.push('pattern');
+  for (const key of candidates) {
     const v = a[key];
     if (typeof v === 'string' && v.trim() !== '') return v;
   }
@@ -36,7 +40,7 @@ export function extractTouchedFiles(messages: Message[]): TouchedFile[] {
       } catch {
         continue;
       }
-      const path = pickPath(args);
+      const path = pickPath(tool, args);
       if (!path) continue;
       if (!READ_TOOLS.has(tool) && !WRITE_TOOLS.has(tool)) continue;
       const op = tool as TouchedFile['ops'][number];
