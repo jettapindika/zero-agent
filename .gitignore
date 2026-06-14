@@ -26,7 +26,28 @@ apps/web/tsconfig.tsbuildinfo
 *.tsbuildinfo
 apps/desktop/src-tauri/binaries/
 
+# Bare Go binaries that older builds dropped at repo root or in apps/.
+/cli
+/server
+apps/cli/cli
+apps/cli/zero
+apps/cli/zero-server
+
+# Author-local agent / multi-brain context (not for OSS distribution).
+.opencode-context.md
+.multibrain/
+
 # OpenCode/Zero session context (per-machine, not for VCS)
 .opencode-jce/
 .opencode-context-archive.md
 review.md
+
+# Agent learned-context library (per-machine, contains private project lessons)
+# README.md and .gitkeep are intentionally versioned so the layout exists in fresh checkouts.
+library/entries/*
+!library/entries/.gitkeep
+library/archive/*
+!library/archive/.gitkeep
+library/indexes/*
+!library/indexes/.gitkeep
+library/LIBRARY.md

@@ -128,10 +128,11 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":        user,
-		"isDev":       s.auth.IsDev(user.Email),
-		"sessionId":   sess.ID,
-		"expiresAtMs": sess.ExpiresAt,
+		"user":         user,
+		"isDev":        s.auth.IsDev(user.Email),
+		"sessionId":    sess.ID,
+		"sessionToken": auth.SignSessionID(sess.ID, s.auth.Secret()),
+		"expiresAtMs":  sess.ExpiresAt,
 	})
 }
 

@@ -1,23 +1,42 @@
-import { Bot, Check, ChevronDown, CircleAlert, CircleCheck, Copy, FolderOpen, Loader2, Pencil, Power, Send, Trash2, X } from 'lucide-react';
+import { Bot, Check, ChevronDown, CircleAlert, CircleCheck, Copy, File as FileIcon, FileSpreadsheet, FileText, Film, FolderOpen, Headphones, Image as ImageIcon, Loader2, Paperclip, Pencil, Power, Presentation, Send, Share2, Trash2, X } from 'lucide-react';
 import { FormEvent, KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityPanel } from './components/ActivityPanel';
+import { CollabBar } from './components/CollabBar';
+import { CollabChatBar } from './components/CollabChatBar';
+import { PromptInterruptWarning } from './components/PromptInterruptWarning';
+import { InterruptRequestCard } from './components/InterruptRequestCard';
 import { FilesList } from './components/FilesList';
 import { LoginView } from './components/LoginView';
 import { ModelPickerModal } from './components/ModelPickerModal';
 import { PermissionCard } from './components/PermissionCard';
+import { ShareModal } from './components/ShareModal';
 import { SidePanel } from './components/SidePanel';
 import { SlashPreview } from './components/SlashPreview';
+import { PlayfulGreeting } from './components/PlayfulGreeting';
+import { ToolPart } from './components/ToolPart';
+import { TypingIndicator } from './components/TypingIndicator';
 import { UserChip } from './components/UserChip';
+import {
+  loadShareConfig,
+  loadJoinedRoom,
+  type ShareConfig,
+  type JoinedRoomConfig,
+  getIdentity,
+  type ClientIdentity,
+} from './collab';
 import { MessageBody, shouldUseStructuredRenderer } from './chat/MessageBody';
 import { useActivityStream } from './activity';
+import { useActivePrompt } from './useActivePrompt';
 import { usePendingPermissions } from './permissions';
 import { useCurrentUser } from './auth';
 import { useQueueRunner } from './queue';
 import { parseSlashCommand, validateModelId, SLASH_HELP_TEXT } from './slash';
 import { extractTasks } from './tasks';
 import { extractTouchedFiles } from './files';
+import { type DroppedFile, type DroppedKind } from './dropped-files';
+import { useFileDrop } from './use-file-drop';
 import { desktop, type StatusResponse } from './tauri';
-import { cancelSession, createMessage, createSession, deleteSession, ensureProject, listMessages, listSessions, renameSession, runSession, updateSession, type AuthUser, type Message, type Project, type Session } from './zero-api';
+import { cancelSession, createMessage, createSession, deleteSession, ensureProject, getSessionToken, listMessages, listSessions, renameSession, runSession, updateSession, type AuthUser, type Message, type Part, type Project, type Session } from './zero-api';
 
 const DEFAULT_MODEL = 'cx/gpt-5.5';
 const DEFAULT_AGENT = 'build';
@@ -26,8 +45,21 @@ function initialProjectPath() {
   return window.localStorage.getItem('zero.projectPath') || '';
 }
 
+type AttachmentEntry = {
+  path: string;
+  name: string;
+  kind: DroppedKind;
+  status: 'uploading' | 'done' | 'error';
+  attachmentId?: string;
+  error?: string;
+};
+
+function attachmentEntryFromDropped(file: DroppedFile): AttachmentEntry {
+  return { path: file.path, name: file.name, kind: file.kind, status: 'uploading' };
+}
+
 // folderDisplayName returns just the basename of an absolute path so the
-// sidebar shows "zero-agent" instead of "/Users/mac/.../project/zero-agent".
+// sidebar shows the project name instead of the full filesystem path.
 // Trailing slashes are tolerated. Empty input becomes a placeholder.
 function folderDisplayName(path: string): string {
   const trimmed = path.trim().replace(/[/\\]+$/, '');
@@ -63,6 +95,7 @@ export function App() {
       currentUser={auth.state.user}
       isDev={auth.state.isDev}
       onSignOut={auth.signOut}
+      onSignIn={auth.signIn}
     />
   );
 }
@@ -71,9 +104,10 @@ type AppShellProps = {
   currentUser: AuthUser;
   isDev: boolean;
   onSignOut: () => Promise<void>;
+  onSignIn: () => void;
 };
 
-function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
+function AppShell({ currentUser, isDev, onSignOut, onSignIn }: AppShellProps) {
   const [server, setServer] = useState<StatusResponse>({ ok: false, status: 'checking', detail: 'Checking zero-server...' });
   const [provider, setProvider] = useState<StatusResponse>({ ok: false, status: 'checking', detail: 'Checking provider...' });
   const [project, setProject] = useState<Project | null>(null);
@@ -82,6 +116,7 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [localNotices, setLocalNotices] = useState<{ id: string; level: 'info' | 'error'; text: string }[]>([]);
   const [prompt, setPrompt] = useState('');
+  const [attachments, setAttachments] = useState<AttachmentEntry[]>([]);
   const [projectPath, setProjectPath] = useState(initialProjectPath);
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
@@ -89,6 +124,13 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
   const [error, setError] = useState<string | null>(null);
   const [queueWarning, setQueueWarning] = useState<string | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareConfig, setShareConfig] = useState<ShareConfig | null>(() => loadShareConfig());
+  const [joinedRoom, setJoinedRoom] = useState<JoinedRoomConfig | null>(() => loadJoinedRoom());
+  const [pendingJoinInvite, setPendingJoinInvite] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [identity, setIdentity] = useState<ClientIdentity | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -97,6 +139,23 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
     () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null,
     [activeSessionId, sessions],
   );
+
+  const collabRoomId = shareConfig?.sessionId ?? joinedRoom?.sessionId ?? null;
+  const isCollabActive = !!shareConfig || !!joinedRoom;
+  const isCollabHost = !!shareConfig;
+  const collabSessionId = activeSession?.id ?? null;
+
+  const activePromptState = useActivePrompt(
+    collabRoomId,
+    identity?.clientId ?? null,
+    isCollabActive,
+  );
+  const showInterruptWarning =
+    isCollabActive &&
+    !!activePromptState.active &&
+    !activePromptState.isSelf &&
+    !!collabRoomId &&
+    !!activePromptState.active?.sessionId;
 
   const refreshStatus = useCallback(async () => {
     const [nextServer, nextProvider] = await Promise.allSettled([
@@ -129,6 +188,78 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus]);
+
+  useEffect(() => {
+    getIdentity()
+      .then(setIdentity)
+      .catch(() => {});
+  }, []);
+
+  // Consume any pending project handed off by `zero <path>` on the CLI.
+  // Runs once: the Tauri command deletes the handoff file as it reads it,
+  // so re-mounts (HMR, navigations) won't re-apply a stale path.
+  useEffect(() => {
+    desktop
+      .consumePendingProject()
+      .then((path) => {
+        if (path && path.trim()) {
+          setProjectPath(path.trim());
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Wire `zero://join/<id>?token=…` deep links into the ShareModal.
+  // Cold-start delivery (macOS/Windows shell launching the app via the URL)
+  // arrives through the deep-link plugin's `getCurrent`. Runtime delivery
+  // (already-running app re-activated by a click, single-instance argv on
+  // Windows/Linux) is forwarded by `main.rs` as a `zero://deep-link` event.
+  useEffect(() => {
+    let cleanup: (() => void) | null = null;
+    let cancelled = false;
+
+    function handleUrl(url: string) {
+      if (!url) return;
+      const lower = url.toLowerCase();
+      if (!lower.startsWith('zero://join/')) return;
+      setPendingJoinInvite(url);
+      setShareModalOpen(true);
+    }
+
+    (async () => {
+      try {
+        const [{ getCurrent, onOpenUrl }, { listen }] = await Promise.all([
+          import('@tauri-apps/plugin-deep-link'),
+          import('@tauri-apps/api/event'),
+        ]);
+
+        const startUrls = await getCurrent().catch(() => null);
+        if (!cancelled && startUrls && startUrls.length > 0) {
+          handleUrl(startUrls[0]!);
+        }
+
+        const offPlugin = await onOpenUrl((urls) => {
+          if (urls && urls.length > 0) handleUrl(urls[0]!);
+        });
+
+        const offBridge = await listen<string>('zero://deep-link', (e) => {
+          if (typeof e.payload === 'string') handleUrl(e.payload);
+        });
+
+        cleanup = () => {
+          offPlugin();
+          offBridge();
+        };
+      } catch {
+        // No-op when running outside Tauri (vite dev in a browser).
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (server.ok && !project) {
@@ -224,6 +355,47 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
   const activity = useActivityStream(activeSessionId, sending);
   const permissions = usePendingPermissions(activeSessionId);
 
+  // Native drag-drop: capture OS file paths from the desktop window.
+  const fileDrop = useFileDrop();
+  fileDrop.onDropped((files) => {
+    if (!activeSessionId) {
+      setError('Create or open a session before attaching files.');
+      return;
+    }
+    const seen = new Set(attachments.map((a) => a.path));
+    const fresh = files.filter((f) => !seen.has(f.path));
+    if (fresh.length === 0) return;
+    setAttachments((prev) => [...prev, ...fresh.map(attachmentEntryFromDropped)]);
+    composerRef.current?.focus();
+    void uploadAttachmentsForPaths(activeSessionId, fresh.map((f) => f.path));
+  });
+
+  async function uploadAttachmentsForPaths(sessionId: string, paths: string[]) {
+    try {
+      const uploaded = await desktop.uploadAttachments(sessionId, paths, getSessionToken());
+      setAttachments((prev) =>
+        prev.map((entry) => {
+          if (!paths.includes(entry.path)) return entry;
+          const match = uploaded.find((u) => u.origName === entry.name);
+          if (!match) return { ...entry, status: 'error', error: 'upload returned no match' };
+          return { ...entry, status: 'done', attachmentId: match.id };
+        }),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setAttachments((prev) =>
+        prev.map((entry) =>
+          paths.includes(entry.path) ? { ...entry, status: 'error', error: message } : entry,
+        ),
+      );
+      setError(`Attachment upload failed: ${message}`);
+    }
+  }
+
+  function removeAttachment(path: string) {
+    setAttachments((prev) => prev.filter((f) => f.path !== path));
+  }
+
   // Auto-scroll to the newest content whenever it grows: messages list change,
   // sending toggle, local notices, activity rows, or live token stream.
   useEffect(() => {
@@ -237,7 +409,10 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
   ]);
 
   // Extract task markers + touched files from assistant messages.
-  const tasks = useMemo(() => extractTasks(messages), [messages]);
+  const tasks = useMemo(
+    () => extractTasks(messages, activity.live.text),
+    [messages, activity.live.text],
+  );
   const touchedFiles = useMemo(() => extractTouchedFiles(messages), [messages]);
   const showSidePanel = activeSession !== null;
 
@@ -290,16 +465,34 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
     }
   }
 
-  async function handleRenameSession(session: Session) {
+  function handleRenameSession(session: Session) {
     if (!project) return;
-    const title = window.prompt('Rename session', session.title)?.trim();
-    if (!title || title === session.title) return;
+    setRenamingId(session.id);
+    setRenameDraft(session.title);
+    setError(null);
+  }
+
+  function cancelRename() {
+    setRenamingId(null);
+    setRenameDraft('');
+  }
+
+  async function commitRename(session: Session) {
+    if (!project) {
+      cancelRename();
+      return;
+    }
+    const title = renameDraft.trim();
+    if (!title || title === session.title) {
+      cancelRename();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const updated = await renameSession(session.id, title);
       setSessions((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      await refreshSessions(project.id);
+      cancelRename();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -421,15 +614,31 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
     event.preventDefault();
     if (!activeSession) return;
     const text = prompt.trim();
-    if (text === '') return;
+    if (text === '' && attachments.length === 0) return;
 
-    // Slash commands run locally and never enter the queue.
+    if (attachments.some((a) => a.status === 'uploading')) {
+      setQueueWarning('Wait for attachments to finish uploading.');
+      setTimeout(() => setQueueWarning(null), 4000);
+      return;
+    }
+    if (attachments.some((a) => a.status === 'error')) {
+      setQueueWarning('Remove failed attachments before sending.');
+      setTimeout(() => setQueueWarning(null), 4000);
+      return;
+    }
+
     if (text.startsWith('/')) {
       const handled = await handleSlashCommand(text);
       if (handled) {
         setPrompt('');
         return;
       }
+    }
+
+    if (text === '' && attachments.length > 0) {
+      setQueueWarning('Add a prompt describing what to do with the attachment.');
+      setTimeout(() => setQueueWarning(null), 4000);
+      return;
     }
 
     const result = queue.enqueue(text);
@@ -439,6 +648,7 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
       return;
     }
     setPrompt('');
+    setAttachments([]);
     setQueueWarning(null);
   }
 
@@ -480,10 +690,14 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
       <header className="topbar">
         <div>
           <p className="eyebrow">Zero Desktop</p>
-          <h1>Local-first coding agent</h1>
+          <PlayfulGreeting />
         </div>
         <UserChip user={currentUser} isDev={isDev} onSignOut={onSignOut} />
       </header>
+
+      {shareConfig ? (
+        <CollabBar config={shareConfig} onStopped={() => setShareConfig(null)} />
+      ) : null}
 
       <section className="status-grid">
         <StatusCard title="Zero server" status={server} />
@@ -538,12 +752,33 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
               <button disabled={!server.ok || busy} onClick={handleChooseProject} type="button">
                 <FolderOpen size={16} /> Choose folder
               </button>
+              <button
+                disabled={!server.ok || busy || !project || !!shareConfig}
+                onClick={() => setShareModalOpen(true)}
+                title={shareConfig ? 'Already sharing — stop in the bar above' : 'Share this folder with another Zero user'}
+                type="button"
+              >
+                <Share2 size={16} /> {shareConfig ? 'Sharing…' : 'Share folder'}
+              </button>
             </div>
           </div>
-          <FilesList files={touchedFiles} />
+          <FilesList 
+            files={touchedFiles} 
+            attachments={attachments.map(a => ({
+              name: a.name,
+              kind: a.kind,
+              status: a.status
+            }))}
+          />
           <div className="panel-header">
             <h2>Sessions</h2>
-            <button type="button" onClick={handleNewSession} disabled={!project || busy}>New</button>
+            {!joinedRoom || isCollabHost ? (
+              <button type="button" onClick={handleNewSession} disabled={!project || busy}>New</button>
+            ) : (
+              <span className="panel-header-note" title="Only the host can create new sessions in a shared room">
+                Host only
+              </span>
+            )}
           </div>
           {sessions.length === 0 ? (
             <p className="muted">
@@ -554,26 +789,66 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
                   : 'No sessions yet. Click "New" to start one.'}
             </p>
           ) : null}
-          {sessions.map((session) => (
-            <div className={session.id === activeSession?.id ? 'session-row active' : 'session-row'} key={session.id}>
-              <button
-                className="session"
-                onClick={() => setActiveSessionId(session.id)}
-                type="button"
-              >
-                <span>{session.title}</span>
-                <small>{session.agent} · {session.model}</small>
-              </button>
-              <div className="session-actions">
-                <button aria-label={`Rename ${session.title}`} disabled={busy} onClick={() => handleRenameSession(session)} type="button">
-                  <Pencil size={14} />
-                </button>
-                <button aria-label={`Delete ${session.title}`} disabled={busy} onClick={() => handleDeleteSession(session)} type="button">
-                  <Trash2 size={14} />
-                </button>
+          {sessions.map((session) => {
+            const isEditing = renamingId === session.id;
+            const rowClass = session.id === activeSession?.id ? 'session-row active' : 'session-row';
+            return (
+              <div className={isEditing ? `${rowClass} editing` : rowClass} key={session.id}>
+                {isEditing ? (
+                  <SessionRenameInput
+                    initialValue={renameDraft}
+                    busy={busy}
+                    agent={session.agent}
+                    model={session.model}
+                    onChange={setRenameDraft}
+                    onCommit={() => void commitRename(session)}
+                    onCancel={cancelRename}
+                  />
+                ) : (
+                  <button
+                    className="session"
+                    onClick={() => setActiveSessionId(session.id)}
+                    onDoubleClick={() => handleRenameSession(session)}
+                    type="button"
+                  >
+                    <span>{session.title}</span>
+                    <small>{session.agent} · {session.model}</small>
+                  </button>
+                )}
+                <div className="session-actions">
+                  {isEditing ? (
+                    <>
+                      <button
+                        aria-label="Save title"
+                        disabled={busy}
+                        onClick={() => void commitRename(session)}
+                        type="button"
+                      >
+                        <Check size={14} />
+                      </button>
+                      <button
+                        aria-label="Cancel rename"
+                        disabled={busy}
+                        onClick={cancelRename}
+                        type="button"
+                      >
+                        <X size={14} />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button aria-label={`Rename ${session.title}`} disabled={busy} onClick={() => handleRenameSession(session)} type="button">
+                        <Pencil size={14} />
+                      </button>
+                      <button aria-label={`Delete ${session.title}`} disabled={busy} onClick={() => handleDeleteSession(session)} type="button">
+                        <Trash2 size={14} />
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </aside>
 
         <section className="chat">
@@ -583,14 +858,22 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
             </div>
           ) : null}
           <div className="messages" ref={messagesContainerRef}>
-            {messages.length === 0 ? <EmptyState server={server} provider={provider} /> : messages.map((message) => <MessageCard key={message.id} message={message} />)}
-            {sending ? <ActivityPanel items={activity.items} startedAt={sendingStartedAt} /> : null}
+            {messages.length === 0 ? <EmptyState server={server} provider={provider} /> : messages.map((message) => <MessageCard key={message.id} message={message} userName={currentUser.displayName} />)}
+            {sending && !activity.live.text ? <TypingIndicator /> : null}
+            {sending ? <ActivityPanel items={activity.items} /> : null}
             {sending && activity.live.text ? <LiveAssistantCard text={activity.live.text} /> : null}
             {permissions.pending.map((req) => (
               <PermissionCard
                 key={req.id}
                 request={req}
                 onResolve={(decision) => permissions.resolve(req.id, decision)}
+              />
+            ))}
+            {activePromptState.interruptRequests.map((req) => (
+              <InterruptRequestCard
+                key={req.id}
+                request={req}
+                onResolved={() => activePromptState.dismissRequest(req.id)}
               />
             ))}
             <div ref={messagesEndRef} />
@@ -608,7 +891,14 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
               {queueWarning ? <span className="queue-warning">{queueWarning}</span> : null}
             </div>
           ) : null}
-          <div className="composer-wrap">
+          <div className={`composer-wrap${fileDrop.isDragOver ? ' is-drag-over' : ''}`}>
+            {showInterruptWarning && collabRoomId && activePromptState.active ? (
+              <PromptInterruptWarning
+                actorNickname={activePromptState.active.actorNickname}
+                roomId={collabRoomId}
+                sessionId={activePromptState.active.sessionId || collabSessionId || ''}
+              />
+            ) : null}
             <SlashPreview
               input={prompt}
               onPick={(name) => {
@@ -616,6 +906,14 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
                 composerRef.current?.focus();
               }}
             />
+            {attachments.length > 0 ? (
+              <AttachmentChips files={attachments} onRemove={removeAttachment} />
+            ) : null}
+            {fileDrop.isDragOver ? (
+              <div className="composer-drop-overlay" aria-hidden="true">
+                <Paperclip size={18} /> <span>Drop files to attach paths</span>
+              </div>
+            ) : null}
           <form className="composer" onSubmit={handleSend}>
             <textarea
               ref={composerRef}
@@ -626,7 +924,7 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
               rows={2}
               value={prompt}
             />
-            <button disabled={!activeSession || prompt.trim() === ''} type="submit">
+            <button disabled={!activeSession || (prompt.trim() === '' && attachments.length === 0)} type="submit">
               {sending ? <Loader2 className="spin" size={16} /> : <Send size={16} />} {sending ? 'Running' : 'Send'}
             </button>
           </form>
@@ -667,7 +965,88 @@ function AppShell({ currentUser, isDev, onSignOut }: AppShellProps) {
         }}
         open={modelPickerOpen}
       />
+      {shareModalOpen && project ? (
+        <ShareModal
+          folderPath={projectPath}
+          projectId={project.id}
+          onClose={() => {
+            setShareModalOpen(false);
+            setPendingJoinInvite(null);
+          }}
+          onShared={(cfg) => {
+            setShareConfig(cfg);
+            setShareModalOpen(false);
+            setPendingJoinInvite(null);
+          }}
+          onJoined={(cfg) => {
+            setJoinedRoom(cfg);
+            setPendingJoinInvite(null);
+          }}
+          onSignIn={onSignIn}
+          initialMode={pendingJoinInvite ? 'join' : undefined}
+          initialInvite={pendingJoinInvite ?? undefined}
+        />
+      ) : null}
+      <CollabChatBar
+        roomId={collabRoomId}
+        selfId={identity?.clientId ?? null}
+        isActive={isCollabActive}
+        activePromptNickname={
+          activePromptState.active && !activePromptState.isSelf
+            ? activePromptState.active.actorNickname
+            : null
+        }
+      />
     </main>
+  );
+}
+
+function SessionRenameInput({
+  initialValue,
+  busy,
+  agent,
+  model,
+  onChange,
+  onCommit,
+  onCancel,
+}: {
+  initialValue: string;
+  busy: boolean;
+  agent: string;
+  model: string;
+  onChange: (next: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+  return (
+    <div className="session session-editing">
+      <input
+        ref={inputRef}
+        className="session-rename-input"
+        defaultValue={initialValue}
+        disabled={busy}
+        maxLength={120}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onCommit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        onBlur={onCommit}
+        spellCheck={false}
+        type="text"
+      />
+      <small>{agent} · {model}</small>
+    </div>
   );
 }
 
@@ -686,52 +1065,198 @@ function StatusCard({ title, status }: { title: string; status: StatusResponse }
   );
 }
 
+function iconForKind(kind: DroppedKind) {
+  switch (kind) {
+    case 'IMG': return ImageIcon;
+    case 'VID': return Film;
+    case 'AUD': return Headphones;
+    case 'PDF': return FileText;
+    case 'DOC': return FileText;
+    case 'XLS': return FileSpreadsheet;
+    case 'PPT': return Presentation;
+    case 'TXT': return FileText;
+    default:    return FileIcon;
+  }
+}
+
+function AttachmentChips({
+  files,
+  onRemove,
+}: {
+  files: AttachmentEntry[];
+  onRemove: (path: string) => void;
+}) {
+  return (
+    <div className="attachment-chips" aria-label="Attached files">
+      {files.map((f) => {
+        const Icon = iconForKind(f.kind);
+        const chipClass =
+          f.status === 'error'
+            ? 'attachment-chip attachment-chip-error'
+            : f.status === 'uploading'
+              ? 'attachment-chip attachment-chip-uploading'
+              : 'attachment-chip';
+        const titleText = f.status === 'error' ? `${f.path}\n\n${f.error ?? 'upload failed'}` : f.path;
+        return (
+          <span className={chipClass} key={f.path} title={titleText}>
+            {f.status === 'uploading' ? (
+              <Loader2 size={12} className="attachment-chip-icon spin" />
+            ) : (
+              <Icon size={12} className="attachment-chip-icon" />
+            )}
+            <span className="attachment-chip-tag">{f.kind}</span>
+            <span className="attachment-chip-name">
+              {f.name}
+              {f.status === 'uploading' ? <span className="attachment-chip-status"> · uploading…</span> : null}
+              {f.status === 'error' ? <span className="attachment-chip-status"> · failed</span> : null}
+            </span>
+            <button
+              aria-label={`Remove ${f.name}`}
+              className="attachment-chip-remove"
+              onClick={() => onRemove(f.path)}
+              type="button"
+            >
+              <X size={12} />
+            </button>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function EmptyState({ server, provider }: { server: StatusResponse; provider: StatusResponse }) {
   return (
     <div className="empty">
       <Bot size={42} />
       <h2>Ready for Zero</h2>
       <p>{server.ok ? 'Create a session and send a prompt.' : 'Start zero-server before creating a session.'}</p>
-      {!provider.ok ? <p className="hint">Provider is offline. Start 9router or set ZERO_ROUTER_BASE_URL before running prompts.</p> : null}
+      {!provider.ok ? <p className="hint">Provider is offline. Set <code>ZERO_ROUTER_BASE_URL</code> + <code>ZERO_ROUTER_API_KEY</code> in <code>~/.config/zero/.env</code> to point at any OpenAI-compatible endpoint, then run <code>zero restart</code>.</p> : null}
     </div>
   );
 }
 
-function MessageCard({ message }: { message: Message }) {
-  const fullText = message.parts.map((part) => part.text ?? part.type).join('\n');
-  const parts = splitThinking(fullText);
+function MessageCard({ message, userName }: { message: Message; userName?: string }) {
   const isAssistant = message.role !== 'user';
-  const answerText = parts.answer.join('\n');
-  const useStructured = isAssistant && shouldUseStructuredRenderer(answerText);
+  const runs = groupParts(message.parts);
+  const callsByCallId = buildCallIndex(message.parts);
+  const copyableText = runs
+    .filter((r): r is Extract<PartRun, { kind: 'text' }> => r.kind === 'text')
+    .map((r) => r.text)
+    .join('\n')
+    .trim();
+
+  const displayRole = isAssistant ? 'Zero' : (userName || 'You');
 
   return (
     <article className={message.role === 'user' ? 'message user' : 'message assistant'}>
       <header className="message-head">
-        <p className="role">{message.role}</p>
-        {isAssistant && answerText.trim() !== '' ? (
-          <CopyButton text={answerText} label="Copy response" />
+        <p className="role">{displayRole}</p>
+        {isAssistant && copyableText !== '' ? (
+          <CopyButton text={copyableText} label="Copy response" />
         ) : null}
       </header>
-      {parts.thinking.length > 0 ? <ThinkingBlock lines={parts.thinking} /> : null}
       <div className="message-content">
-        {useStructured ? (
-          <MessageBody
-            text={answerText}
-            renderInline={(t) => renderInlineRichText(t)}
-            renderCode={(language, lines) => (
-              <CodeBlock block={{ type: 'code', language, lines }} />
-            )}
-            renderProseLine={(line) => <MessageLine line={line} />}
-          />
-        ) : (
-          parseMessageBlocks(parts.answer).map((block, index) => (
-            block.type === 'code'
-              ? <CodeBlock block={block} key={`${message.id}-${index}`} />
-              : <MessageLine key={`${message.id}-${index}`} line={block.text} />
-          ))
+        {runs.map((run, idx) =>
+          run.kind === 'tool' ? (
+            <ToolPart
+              key={`${message.id}-tool-${idx}`}
+              part={run.part}
+              originCall={
+                run.part.toolCallId ? callsByCallId.get(run.part.toolCallId) : undefined
+              }
+              renderCode={(language, lines) => (
+                <CodeBlock block={{ type: 'code', language, lines }} />
+              )}
+            />
+          ) : (
+            <TextRunRender
+              key={`${message.id}-text-${idx}`}
+              keyPrefix={`${message.id}-text-${idx}`}
+              text={run.text}
+              isAssistant={isAssistant}
+            />
+          ),
         )}
       </div>
     </article>
+  );
+}
+
+function buildCallIndex(parts: Part[]): Map<string, Part> {
+  const index = new Map<string, Part>();
+  for (const part of parts) {
+    if (part.type === 'tool_call' && part.toolCallId) {
+      index.set(part.toolCallId, part);
+    }
+  }
+  return index;
+}
+
+type PartRun =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; part: Part };
+
+function groupParts(parts: Part[]): PartRun[] {
+  const runs: PartRun[] = [];
+  let textBuf: string[] = [];
+
+  const flush = () => {
+    if (textBuf.length > 0) {
+      runs.push({ kind: 'text', text: textBuf.join('\n') });
+      textBuf = [];
+    }
+  };
+
+  for (const part of parts) {
+    if (part.type === 'tool_call' || part.type === 'tool_result') {
+      flush();
+      runs.push({ kind: 'tool', part });
+      continue;
+    }
+    if (typeof part.text === 'string' && part.text.length > 0) {
+      textBuf.push(part.text);
+    }
+  }
+  flush();
+  return runs;
+}
+
+function TextRunRender({
+  keyPrefix,
+  text,
+  isAssistant,
+}: {
+  keyPrefix: string;
+  text: string;
+  isAssistant: boolean;
+}) {
+  const parts = splitThinking(text);
+  const answerText = parts.answer.join('\n');
+  const useStructured = isAssistant && shouldUseStructuredRenderer(answerText);
+
+  return (
+    <>
+      {parts.thinking.length > 0 ? <ThinkingBlock lines={parts.thinking} /> : null}
+      {useStructured ? (
+        <MessageBody
+          text={answerText}
+          renderInline={(t) => renderInlineRichText(t)}
+          renderCode={(language, lines) => (
+            <CodeBlock block={{ type: 'code', language, lines }} />
+          )}
+          renderProseLine={(line) => <MessageLine line={line} />}
+        />
+      ) : (
+        parseMessageBlocks(parts.answer).map((block, index) =>
+          block.type === 'code' ? (
+            <CodeBlock block={block} key={`${keyPrefix}-${index}`} />
+          ) : (
+            <MessageLine key={`${keyPrefix}-${index}`} line={block.text} />
+          ),
+        )
+      )}
+    </>
   );
 }
 
@@ -742,7 +1267,7 @@ function LiveAssistantCard({ text }: { text: string }) {
   return (
     <article className="message assistant live">
       <header className="message-head">
-        <p className="role">assistant <span className="live-pill">streaming</span></p>
+        <p className="role">Zero <span className="live-pill">streaming</span></p>
       </header>
       {parts.thinking.length > 0 ? <ThinkingBlock lines={parts.thinking} /> : null}
       <div className="message-content">

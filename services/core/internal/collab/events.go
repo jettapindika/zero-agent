@@ -22,7 +22,15 @@ const (
 	EventPromptCompleted       = "prompt.completed"
 	EventPromptCancelled       = "prompt.cancelled"
 	EventPromptFailed          = "prompt.failed"
+	EventPromptInterrupted     = "prompt.interrupted"
 
 	EventSessionLocked   = "session.locked"
 	EventSessionUnlocked = "session.unlocked"
+
+	EventChatMessage = "collab.chat.message"
+	EventChatHistory = "collab.chat.history"
+
+	EventInterruptRequested = "collab.interrupt.requested"
+	EventInterruptApproved  = "collab.interrupt.approved"
+	EventInterruptRejected  = "collab.interrupt.rejected"
 )

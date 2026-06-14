@@ -45,6 +45,10 @@ func IsPublicPath(path string) bool {
 	if path == "/events" || (len(path) > 7 && path[:7] == "/events") {
 		return true
 	}
+	// Collab endpoints are public - they validate participation via X-Zero-Client-ID
+	if len(path) >= 14 && path[:14] == "/collab/rooms/" {
+		return true
+	}
 	return false
 }
 

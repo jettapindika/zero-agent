@@ -205,6 +205,7 @@ export type AuthMeResponse = {
   user: AuthUser;
   isDev: boolean;
   sessionId: string;
+  sessionToken?: string;
   expiresAtMs: number;
 };
 
@@ -217,6 +218,12 @@ export class AuthRequiredError extends Error {
 
 // authMe is special-cased: a 401 is the normal "not signed in" state, not an
 // error worth bubbling. Caller distinguishes via AuthRequiredError.
+//
+// When the daemon was launched without ZERO_AUTH_ENABLED, every /auth/* route
+// returns 503 with {"error":"auth disabled"}. In that single-user mode there
+// is no real account to fetch, so we synthesize a stable local identity and
+// return it as if the user were signed in. App.tsx therefore renders the main
+// shell without ever hitting LoginView.
 export async function authMe(): Promise<AuthMeResponse> {
   const headers: Record<string, string> = {};
   if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
@@ -224,11 +231,40 @@ export async function authMe(): Promise<AuthMeResponse> {
   if (response.status === 401 || response.status === 404) {
     throw new AuthRequiredError();
   }
+  if (response.status === 503) {
+    const body = await response.clone().json().catch(() => ({} as { error?: string }));
+    if (body && (body as { error?: string }).error === 'auth disabled') {
+      return localSingleUserAuth();
+    }
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `auth/me HTTP ${response.status}`);
   }
-  return (await response.json()) as AuthMeResponse;
+  const body = (await response.json()) as AuthMeResponse;
+  if (body.sessionToken && body.sessionToken !== sessionToken) {
+    setSessionToken(body.sessionToken);
+  }
+  return body;
+}
+
+function localSingleUserAuth(): AuthMeResponse {
+  const now = Date.now();
+  return {
+    user: {
+      id: 'local',
+      googleId: '',
+      email: 'local@zero',
+      displayName: 'Local',
+      avatarUrl: '',
+      role: 'user',
+      createdAt: now,
+      updatedAt: now,
+    },
+    isDev: false,
+    sessionId: 'local',
+    expiresAtMs: now + 365 * 24 * 60 * 60 * 1000,
+  };
 }
 
 export async function authLogout(): Promise<void> {

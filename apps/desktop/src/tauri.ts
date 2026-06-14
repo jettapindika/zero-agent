@@ -8,8 +8,23 @@ export type StatusResponse = {
   detail: string;
 };
 
+export type UploadedAttachment = {
+  id: string;
+  sessionId: string;
+  origName: string;
+  mimeType: string;
+  sizeBytes: number;
+  isChunked: boolean;
+  chunkCount: number;
+  createdAt: number;
+};
+
 async function call<T>(command: string): Promise<T> {
   return invoke<T>(command);
+}
+
+async function callWith<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  return invoke<T>(command, args);
 }
 
 export const desktop = {
@@ -21,6 +36,13 @@ export const desktop = {
     const selected = await open({ directory: true, multiple: false, title: 'Choose Zero project folder' });
     return typeof selected === 'string' ? selected : null;
   },
+  consumePendingProject: () => call<string | null>('consume_pending_project'),
+  uploadAttachments: (sessionId: string, paths: string[], authToken: string | null) =>
+    callWith<UploadedAttachment[]>('upload_attachments', {
+      sessionId,
+      paths,
+      authToken,
+    }),
   // Opens the system browser; capability is scoped to http://127.0.0.1:8910/*
   // so the OAuth start URL is the only thing this can launch.
   openExternalUrl: (url: string) => shellOpen(url),

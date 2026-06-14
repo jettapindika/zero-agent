@@ -103,6 +103,66 @@ func (r *Runner) Run(ctx context.Context, sessionID string) error {
 		providerMessages = append(providerMessages, provider.Message{Role: message.Role, Content: content.String()})
 	}
 
+	var attachmentInfos []attachmentInfo
+	for _, message := range messages {
+		if message.Role != "system" {
+			continue
+		}
+		parts, err := r.db.ListParts(ctx, message.ID)
+		if err != nil {
+			continue
+		}
+		for _, part := range parts {
+			if part.Text == nil || !isAttachmentSystemMessage(*part.Text) {
+				continue
+			}
+			ids := extractAttachmentIDs(*part.Text)
+			if len(ids) == 0 {
+				continue
+			}
+			results, infos, err := autoReadAttachments(ctx, r.db, ids)
+			if err != nil {
+				continue
+			}
+			attachmentInfos = append(attachmentInfos, infos...)
+
+			for i, result := range results {
+				toolCallID := fmt.Sprintf("auto-read-%s", ids[i])
+				providerMessages = append(providerMessages, provider.Message{
+					Role:       "tool",
+					Content:    result.Output,
+					ToolCallID: toolCallID,
+				})
+			}
+		}
+	}
+
+	if len(attachmentInfos) > 0 {
+		ackMsg, err := r.db.CreateMessage(ctx, sessionID, "assistant")
+		if err == nil {
+			var ackText strings.Builder
+			for i, info := range attachmentInfos {
+				if i > 0 {
+					ackText.WriteString("\n")
+				}
+				ackText.WriteString(buildAckMessage(info))
+			}
+			text := ackText.String()
+			_, err := r.db.CreatePart(ctx, storage.CreatePartInput{
+				MessageID: ackMsg.ID,
+				Type:      "text",
+				OrderNum:  0,
+				Text:      &text,
+			})
+			if err == nil {
+				r.bus.Publish("message.created", session.ProjectID, session.ID, map[string]any{
+					"message": ackMsg,
+					"parts":   []storage.Part{{Text: &text}},
+				})
+			}
+		}
+	}
+
 	tools := r.providerTools()
 
 	for step := 0; step < MaxAgentSteps; step++ {

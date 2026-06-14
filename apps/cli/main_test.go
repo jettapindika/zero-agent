@@ -40,21 +40,16 @@ func TestEnsureZeroDirCreatesPrivateDirectory(t *testing.T) {
 	}
 }
 
-func TestIsTTYUnavailableError(t *testing.T) {
-	if !isTTYUnavailableError(assertErr("could not open a new TTY: open /dev/tty: device not configured")) {
-		t.Fatalf("expected TTY unavailable error to be detected")
-	}
-	if isTTYUnavailableError(assertErr("some other error")) {
-		t.Fatalf("unexpected TTY unavailable detection")
+func TestDefaultModelFallback(t *testing.T) {
+	t.Setenv("ZERO_DEFAULT_MODEL", "")
+	if got := defaultModel(); got != "gpt-4o-mini" {
+		t.Fatalf("defaultModel() = %q, want gpt-4o-mini", got)
 	}
 }
 
-func TestDefaultModelUsesResponsive9RouterModel(t *testing.T) {
-	if got := defaultModel(); got != "cx/gpt-5.5" {
-		t.Fatalf("defaultModel() = %q, want cx/gpt-5.5", got)
+func TestDefaultModelEnvOverride(t *testing.T) {
+	t.Setenv("ZERO_DEFAULT_MODEL", "openai/gpt-4o")
+	if got := defaultModel(); got != "openai/gpt-4o" {
+		t.Fatalf("defaultModel() with env override = %q, want openai/gpt-4o", got)
 	}
 }
-
-type assertErr string
-
-func (e assertErr) Error() string { return string(e) }

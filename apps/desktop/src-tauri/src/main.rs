@@ -1,13 +1,15 @@
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 use tokio::time::sleep;
 
 const ZERO_API_BASE: &str = "http://127.0.0.1:8910";
-const DEFAULT_PROVIDER_BASE: &str = "http://127.0.0.1:20128/v1";
+const DEFAULT_PROVIDER_BASE: &str = "https://api.openai.com/v1";
 
 #[derive(Default)]
 struct ServerProcess {
@@ -24,6 +26,25 @@ struct StatusResponse {
 #[tauri::command]
 async fn server_status() -> StatusResponse {
     health_status(&format!("{ZERO_API_BASE}/health"), "server").await
+}
+
+fn pending_project_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".zero").join("pending-project.txt"))
+}
+
+#[tauri::command]
+async fn consume_pending_project() -> Option<String> {
+    let path = pending_project_path()?;
+    let bytes = std::fs::read(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let raw = String::from_utf8(bytes).ok()?;
+    let trimmed = raw.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 #[tauri::command]
@@ -158,8 +179,114 @@ async fn health_status(url: &str, label: &str) -> StatusResponse {
     }
 }
 
+#[tauri::command]
+async fn upload_attachments(
+    session_id: String,
+    paths: Vec<String>,
+    auth_token: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if session_id.trim().is_empty() {
+        return Err("session id required".to_string());
+    }
+    if paths.is_empty() {
+        return Err("no files to upload".to_string());
+    }
+
+    let mut form = reqwest::multipart::Form::new();
+    for path_str in &paths {
+        let path = std::path::Path::new(path_str);
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|err| format!("read {}: {}", path_str, err))?;
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let mime = mime_for(path);
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename)
+            .mime_str(&mime)
+            .map_err(|err| format!("mime {}: {}", mime, err))?;
+        form = form.part("files", part);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|err| format!("http client: {err}"))?;
+
+    let mut req = client
+        .post(format!("{ZERO_API_BASE}/sessions/{session_id}/files"))
+        .multipart(form);
+    if let Some(token) = auth_token {
+        if !token.is_empty() {
+            req = req.bearer_auth(token);
+        }
+    }
+
+    let resp = req.send().await.map_err(|err| format!("upload: {err}"))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("upload failed (HTTP {status}): {body}"));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|err| format!("decode response: {err}"))?;
+    Ok(parsed)
+}
+
+fn mime_for(path: &std::path::Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "heic" => "image/heic",
+        "tiff" | "tif" => "image/tiff",
+        "pdf" => "application/pdf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "csv" => "text/csv",
+        "txt" | "log" | "md" | "mdx" => "text/plain",
+        "json" => "application/json",
+        "yaml" | "yml" => "application/yaml",
+        "html" | "htm" => "text/html",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
 fn main() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            forward_deep_link_argv(app, &argv);
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(ServerProcess::default())
@@ -167,15 +294,51 @@ fn main() {
             server_status,
             provider_status,
             start_server,
-            stop_server
+            stop_server,
+            consume_pending_project,
+            upload_attachments
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = start_server(handle.clone(), handle.state::<ServerProcess>()).await;
             });
+
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                let _ = app.deep_link().register_all();
+            }
+
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                let strs: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+                emit_deep_links(app.handle(), &strs);
+            }
+
+            let emit_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                let strs: Vec<String> = event.urls().iter().map(|u| u.to_string()).collect();
+                emit_deep_links(&emit_handle, &strs);
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running Zero desktop");
+}
+
+fn emit_deep_links(handle: &tauri::AppHandle, urls: &[String]) {
+    for url in urls {
+        if !url.to_lowercase().starts_with("zero://") {
+            continue;
+        }
+        let _ = handle.emit("zero://deep-link", url.clone());
+    }
+}
+
+fn forward_deep_link_argv(app: &tauri::AppHandle, argv: &[String]) {
+    for arg in argv.iter().skip(1) {
+        if arg.to_lowercase().starts_with("zero://") {
+            let _ = app.emit("zero://deep-link", arg.clone());
+        }
+    }
 }

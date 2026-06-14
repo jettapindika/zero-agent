@@ -1,148 +1,161 @@
 # Zero
 
-Terminal-first AI coding agent.
+> Desktop-first, local-by-default AI coding agent with a thin scriptable CLI.
 
-## Architecture
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-v0.1.0-orange)](#)
 
-```txt
-Terminal CLI/TUI → Go SDK → local HTTP/SSE core → providers/tools/storage
+Zero is a **bring-your-own-model** AI coding agent. It runs entirely on your
+machine, talks to any OpenAI-compatible endpoint (OpenAI, OpenRouter,
+LiteLLM, Ollama, vLLM, llama.cpp, LM Studio, …), and stores chat history in a
+local SQLite file. The desktop app is the primary interface; the `zero` CLI
+gives you a line-mode REPL and one-shot prompts for scripting.
+
+```
+Desktop app (Tauri)  ─┐
+zero CLI (line REPL) ─┼─►  Go SDK  ─►  local HTTP/SSE core  ─►  your provider
 ```
 
-Zero runs locally. The terminal command is the primary interface; browser UI is legacy/optional and not required for normal use.
+---
 
-## Build
+## Quick start
 
 ```bash
+git clone <this repo>
+cd zero-agent
+cp .env.example ~/.config/zero/.env       # then edit URL + API key
 make build
-```
-
-This creates:
-
-```txt
-bin/zero
-bin/zero-server
-```
-
-Install the command so you can run `zero` without `./bin/`:
-
-```bash
 make install
-zero
+zero start                                # background daemon
+zero .                                    # open desktop in current folder
 ```
 
-By default this installs to `~/.local/bin`. If your shell cannot find `zero`, add `~/.local/bin` to `PATH`.
+That's it. Anything OpenAI-compatible at `ZERO_ROUTER_BASE_URL` will work.
 
-## First run
+---
+
+## Bring your own model
+
+Zero never talks to a model directly — it always goes through one
+configurable HTTP endpoint that speaks the OpenAI API. Set two env vars in
+`~/.config/zero/.env` (or in your shell):
 
 ```bash
-./bin/zero setup
-./bin/zero start
-./bin/zero status
-./bin/zero
+ZERO_ROUTER_BASE_URL=https://api.openai.com/v1     # any /v1 endpoint
+ZERO_ROUTER_API_KEY=sk-...                          # your key
 ```
 
-Stop the background server:
+The desktop app's **Model Picker** live-fetches `${ZERO_ROUTER_BASE_URL}/models`
+and shows whatever your provider returns — pick one and it sticks per session.
+Tested combinations:
+
+| Provider                    | `ZERO_ROUTER_BASE_URL`              | Notes                                          |
+| --------------------------- | ----------------------------------- | ---------------------------------------------- |
+| OpenAI                      | `https://api.openai.com/v1`         | Default. Use a real `sk-...` key.              |
+| OpenRouter                  | `https://openrouter.ai/api/v1`      | Single key, hundreds of models.                |
+| LiteLLM proxy               | `http://<host>:4000/v1`             | Self-host, route to many backends.             |
+| Ollama (local)              | `http://127.0.0.1:11434/v1`         | API key may be any non-empty string.           |
+| LM Studio (local)           | `http://127.0.0.1:1234/v1`          | Start the LM Studio server first.              |
+| llama.cpp `--server`        | `http://127.0.0.1:8080/v1`          | Compatible OpenAI mode.                        |
+| vLLM (self-host)            | `http://<host>:8000/v1`             | `--api-key` to set the key.                    |
+
+If the picker comes up empty, your provider's `/models` endpoint is either
+unreachable or returns an empty list. The picker falls back to a curated set
+of well-known model ids you can still pick.
+
+Optional: pin a default model id (otherwise Zero picks `gpt-4o-mini`):
 
 ```bash
-./bin/zero stop
+ZERO_DEFAULT_MODEL=anthropic/claude-3-5-sonnet-latest
 ```
 
-## Commands
+---
+
+## CLI
 
 ```bash
-zero                 # open OpenCode-like terminal UI
-zero -p "prompt"     # run one prompt
+zero                 # line REPL against the running daemon
+zero .               # open desktop app rooted at the current folder
+zero <path>          # open desktop app rooted at <path>
+zero -p "prompt"     # one-shot prompt, prints the answer
 zero setup           # create ~/.zero and config
-zero start           # start background server
-zero stop            # stop background server
-zero restart         # restart background server
+zero start           # start background daemon
+zero stop            # stop daemon
+zero restart         # restart daemon
 zero status          # show PID + health
-zero logs            # print ~/.zero/zero.log
+zero logs            # tail ~/.zero/zero.log
+zero models          # list models from your provider's /models endpoint
+zero auth            # show provider config + where to set keys
 zero sessions        # list sessions for current project
-zero share           # create team session invite
-zero join <invite>   # join team session
+zero share           # create a team session invite (prints zero:// URL)
+zero join <invite>   # join a team session
 ```
 
-## TUI shortcuts
+The line REPL recognizes `/new` (fresh session) and `/quit`. Everything else
+— chat history, tool approvals, slash commands, model switching — lives in
+the desktop app.
 
-```txt
-enter    send prompt
-ctrl+j   send prompt (for terminals that map Enter to Ctrl+J)
-ctrl+n   create new session
-ctrl+p   command palette hint/reserved
-ctrl+c   quit
-```
+---
 
-The UI uses a responsive OpenCode-like layout: sidebar + chat on wide terminals, chat-focused mode on narrow terminals.
+## Sharing & joining rooms
 
-## TUI slash commands
+`zero share` prints a `zero://join/<roomId>?token=<token>` URL. Share it
+however (Slack, email, …) — clicking it opens the desktop app on Windows,
+macOS, and Linux with the Share folder modal pre-filled in **Join a room**
+mode. Click **Join** and you're in.
 
-```txt
-/new                         create a new session
-/clear, /reset               clear visible chat
-/status, /info               show session/model/agent status
-/history                     show message count for this session
-/model [provider/model]      show or set model
-/models                      show current model help
-/agent [build|plan|explore]  show or set agent
-/plan, /ask, /code           switch to plan/explore/build mode
-/compact, /summarize         request context compaction
-/editor, /edit               open $EDITOR for prompt drafting
-/shortcuts, /keys            show keyboard shortcuts
-/help                        show slash commands
-/quit, /exit, /q             quit
-```
+The desktop bundle registers the `zero://` URL scheme during installation, and
+a single-instance guard prevents duplicate windows when an existing session
+is already open.
 
-## Provider
-
-Default provider is 9router-compatible OpenAI API:
-
-```txt
-ZERO_ROUTER_BASE_URL=http://127.0.0.1:20128/v1
-ZERO_ROUTER_API_KEY=sk_9router
-```
-
-Start 9router before sending prompts.
-
-## Development
+To produce the Windows installer from a non-Windows host:
 
 ```bash
-make test
-make build
-make run
+make desktop-build-windows   # requires nsis, cargo-xwin, x86_64-pc-windows-msvc
 ```
 
-## Structure
+Output: `apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`.
 
-```txt
-apps/cli          Go terminal command
-apps/cli/tui      Bubble Tea terminal UI
-packages/sdk-go   Go SDK used by CLI
-services/core     Go backend server
-apps/web          legacy/optional web UI
-config/           config schema
+---
+
+## Building from source
+
+```bash
+make build           # bin/zero + bin/zero-server
+make test            # go test ./...
+make install         # install to ~/.local/bin
+make desktop-dev     # tauri dev (HMR)
+make desktop-build   # native installer for the current host
+make desktop-icons   # regenerate per-platform icons from src-tauri/icons/source.svg
 ```
-# zero-agent
 
-## Optional: enable Google sign-in on the desktop app
+Layout:
 
-Auth is **off by default**. Existing single-user installs keep working with no
-changes. To turn it on:
+```
+apps/cli           Go CLI (line REPL + lifecycle commands)
+apps/desktop       Tauri desktop app (primary interface)
+apps/web           legacy/optional web UI
+packages/sdk-go    Go SDK used by CLI and desktop bridge
+services/core      Go backend daemon (HTTP + SSE on :8910)
+config/            config schema
+tools/library      agent learned-context library
+```
 
-1. **Create a Google Cloud project** at <https://console.cloud.google.com>.
-2. **Enable the People API** (Google+ API is deprecated; the OIDC userinfo
-   endpoint Zero uses works without People API too, but enabling it is the
-   recommended path).
-3. **Create OAuth 2.0 credentials → Web application** in the
-   *APIs & Services → Credentials* page.
-4. Set the **Authorized redirect URI** to:
-   ```
-   http://127.0.0.1:8910/auth/google/callback
-   ```
-   Loopback (`127.0.0.1`) is exempt from Google's HTTPS requirement, so plain
-   HTTP works for local desktop dev. The `Secure` cookie flag activates
-   automatically when the daemon is exposed off-loopback.
-5. Copy the client id + secret into `~/.config/zero/.env` (or your shell):
+---
+
+## Optional: Google sign-in (multi-user)
+
+Auth is **off by default** and most installs never need it. Single-user
+local installs keep working with no changes. Turn it on when you want the
+daemon to gate `/sessions/*`, `/projects/*`, etc. behind a real identity:
+
+1. Create a Google Cloud project at <https://console.cloud.google.com> →
+   Enable the People API.
+2. *APIs & Services → Credentials* → **Create OAuth 2.0 → Web Application**.
+   Set Authorized redirect URI to `http://127.0.0.1:8910/auth/google/callback`.
+   (Loopback is exempt from Google's HTTPS requirement.)
+3. Copy the credentials into `~/.config/zero/.env`:
+
    ```bash
    GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com
    GOOGLE_CLIENT_SECRET=...
@@ -151,23 +164,17 @@ changes. To turn it on:
    DEV_EMAILS=you@example.com
    ZERO_AUTH_ENABLED=true
    ```
-6. Rebuild and relaunch:
-   ```bash
-   make build
-   make desktop-build
-   open apps/desktop/src-tauri/target/release/bundle/macos/Zero.app
-   ```
+
+4. `make build && make install-app` and relaunch.
 
 When `ZERO_AUTH_ENABLED=true`:
 
 - Every non-public route returns `401` until the user signs in.
 - The desktop window shows a centered "Sign in with Google" card.
-- Clicking the button opens the system browser. After consent Google redirects
-  to the daemon, which sets an `httpOnly; SameSite=Lax` session cookie and
-  emits an `auth.signed_in` event on the SSE bus. The desktop window picks
-  this up and re-fetches `/auth/me`.
-- Accounts in `DEV_EMAILS` get `role: "dev"`, see a **DEV MODE** tab in the
-  side panel, and can hit `/dev/runtime` + `/dev/skills/reload`.
+- Click → system browser opens → consent → daemon sets an
+  `httpOnly; SameSite=Lax` session cookie → desktop re-fetches `/auth/me`.
+- Accounts in `DEV_EMAILS` get `role: "dev"` and see the **Dev** tab in the
+  side panel.
 - All other accounts default to `role: "user"`.
 
 Public routes (always reachable without a cookie):
@@ -182,58 +189,43 @@ GET  /auth/me
 POST /auth/logout
 ```
 
-Sign-out: click the avatar in the topbar → **Sign out**, or call
-`POST /auth/logout` directly.
+### Optional: Supabase Postgres for auth tables
 
-### Optional: store accounts in Supabase Postgres
+By default `users` and `auth_sessions` live in local SQLite at
+`~/.zero/zero.db`. If you want the same identity to follow you across
+machines, point the daemon at a Supabase Postgres project:
 
-By default the `users` and `auth_sessions` tables live in local SQLite
-(`~/.zero/zero.db`). To centralize accounts in Supabase so the same
-`jettabackupacc1@gmail.com` identity follows you across machines:
+1. Create a Supabase project, install the CLI, and link this repo:
 
-1. **Sign in to the Supabase CLI** (one-time, from your shell):
    ```bash
    supabase login
-   ```
-2. **Link this repo to your Supabase project**:
-   ```bash
-   cd services/core
-   supabase init      # creates services/core/supabase/config.toml
-   supabase link --project-ref nhhglsucankdrmedrxpm
-   ```
-   Migrations live at `services/core/supabase/migrations/00001_auth.sql`
-   and are committed to the repo.
-3. **Push the schema**:
-   ```bash
+   cd services/core && supabase init
+   supabase link --project-ref <your-project-ref>
    supabase db push
    ```
-   Or apply directly with `psql "$ZERO_SUPABASE_DB_URL" -f services/core/supabase/migrations/00001_auth.sql`.
-4. **Pick a connection string** in Supabase
-   (*Project Settings → Database → Connection string*). Three options:
-   - **Session pooler (recommended)** — port 5432, IPv4+IPv6:
-     `postgresql://postgres.<ref>:PASS@aws-0-<region>.pooler.supabase.com:5432/postgres`
-   - **Direct** — IPv6-only on most projects; lowest latency where IPv6 works:
-     `postgresql://postgres:PASS@db.<ref>.supabase.co:5432/postgres`
-   - **Transaction pooler** — port 6543; good for short-lived high-concurrency.
-   Most laptops/desktops should pick the session pooler so the daemon doesn't
-   silently hang on networks without IPv6.
 
-   Then export it:
+2. Set the DSN in `~/.config/zero/.env`:
+
    ```bash
-   export ZERO_SUPABASE_DB_URL="postgresql://postgres.nhhglsucankdrmedrxpm:NEWPASS@aws-0-..pooler.supabase.com:5432/postgres"
+   ZERO_SUPABASE_DB_URL="postgresql://postgres:PASSWORD@db.<your-ref>.supabase.co:5432/postgres"
    ```
-5. **Relaunch the daemon**. On startup you'll see:
-   ```
-   level=INFO msg="auth backend = supabase postgres" host=db.nhhglsucankdrmedrxpm.supabase.co:5432
-   ```
-   Without `ZERO_SUPABASE_DB_URL`, the log shows
-   `auth backend = local sqlite`.
 
-**Security**:
-- The DSN contains your DB password. Keep it in `~/.config/zero/.env` or
-  your shell rc, never in the desktop bundle. The Tauri app never sees it.
-- Row-Level Security is enabled on both tables; the daemon bypasses RLS
-  by connecting as the postgres role. PostgREST / anon-key access is
-  denied by default.
-- Chat data is intentionally not synced to Supabase. Use S2 in the auth
-  plan if you want full sync (multi-day refactor, not in this commit).
+   The session pooler (port 5432) works on IPv4-only networks; the direct
+   connection requires IPv6.
+
+3. Restart the daemon. You should see
+   `level=INFO msg="auth backend = supabase postgres"` in the logs.
+
+Chat data (projects, sessions, messages) **never** syncs to Supabase — it
+stays in local SQLite by design.
+
+---
+
+## Contributing
+
+Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+short version. Security issues: see [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © Zero Agent contributors.

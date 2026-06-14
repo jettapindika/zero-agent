@@ -2,6 +2,9 @@
   "name": "zero-agent",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "description": "Desktop-first AI coding agent with a thin scriptable CLI. Bring your own model.",
+  "homepage": "https://github.com/your-org/zero-agent",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "turbo dev",

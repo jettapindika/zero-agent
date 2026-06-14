@@ -14,9 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/zero-agent/cli/tui"
+	"github.com/zero-agent/core/pkg/dotenv"
 	"github.com/zero-agent/core/pkg/identity"
 	"github.com/zero-agent/core/pkg/server"
 	sdk "github.com/zero-agent/sdk-go"
@@ -28,15 +27,29 @@ func newSDKClient(clientID string) *sdk.Client {
 	return sdk.NewClient(serverAddr, sdk.Options{ClientID: clientID})
 }
 
+// defaultModel returns the model id used for new sessions when the user has
+// not picked one. Override at runtime via the ZERO_DEFAULT_MODEL env var, or
+// pick a different one in the desktop app's Model Picker. The compiled-in
+// fallback is a small, low-cost OpenAI model so a stock checkout works
+// against the public OpenAI API the moment a user supplies an API key.
 func defaultModel() string {
-	return "cx/gpt-5.5"
+	if v := os.Getenv("ZERO_DEFAULT_MODEL"); v != "" {
+		return v
+	}
+	return "gpt-4o-mini"
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "zero",
+	Use:   "zero [path]",
 	Short: "AI coding agent",
-	Long:  "Zero — a production-grade terminal-first AI coding agent.",
+	Long: "Zero — a production-grade terminal-first AI coding agent.\n\n" +
+		"Run `zero .` (or `zero <path>`) in a folder to open the desktop app\n" +
+		"rooted at that folder. With no args, opens the line-mode REPL.",
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 1 && looksLikePath(args[0]) {
+			return openDesktopAt(args[0])
+		}
 		prompt, _ := cmd.Flags().GetString("prompt")
 		if prompt != "" {
 			return runNonInteractive(prompt)
@@ -45,10 +58,26 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+func openDesktopAt(arg string) error {
+	abs, err := resolveProjectDir(arg)
+	if err != nil {
+		return err
+	}
+	if err := writePendingProject(abs); err != nil {
+		return fmt.Errorf("write pending-project file: %w", err)
+	}
+	if err := launchDesktop(); err != nil {
+		return fmt.Errorf("launch desktop: %w", err)
+	}
+	fmt.Printf("Opening Zero desktop in %s\n", abs)
+	return nil
+}
+
 var serverCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Start the backend server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		dotenv.Load()
 		cfg := server.DefaultConfig()
 		return server.Start(cfg)
 	},
@@ -59,6 +88,7 @@ var serveDaemonCmd = &cobra.Command{
 	Short:  "Start the backend server for zero start",
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		dotenv.Load()
 		cfg := server.DefaultConfig()
 		return server.Start(cfg)
 	},
@@ -175,6 +205,8 @@ var shareCmd = &cobra.Command{
 			return fmt.Errorf("failed to create room: %w", err)
 		}
 
+		inviteURL := fmt.Sprintf("zero://join/%s?token=%s", result.Room.ID, result.InviteToken)
+
 		fmt.Println()
 		fmt.Println("Team Session Created")
 		fmt.Println()
@@ -183,11 +215,14 @@ var shareCmd = &cobra.Command{
 		fmt.Printf("  Role:    Host\n")
 		fmt.Printf("  Review:  %s\n", result.Room.PromptReviewMode)
 		fmt.Println()
-		fmt.Println("Invite command:")
-		fmt.Printf("  zero join zero://join/%s?token=%s\n", result.Room.ID, result.InviteToken)
+		fmt.Println("Send this invite link (clicking opens the desktop app on Windows, macOS, and Linux):")
 		fmt.Println()
-		fmt.Println("Or:")
-		fmt.Printf("  zero join --room %s --token %s\n", result.Room.ID, result.InviteToken)
+		fmt.Printf("  %s\n", inviteURL)
+		fmt.Println()
+		fmt.Println("Other ways to join:")
+		fmt.Printf("  CLI:           zero join %s\n", inviteURL)
+		fmt.Printf("  CLI (flags):   zero join --room %s --token %s\n", result.Room.ID, result.InviteToken)
+		fmt.Printf("  Desktop:       paste the link into Share folder \u2192 Join a room\n")
 		fmt.Println()
 
 		return nil
@@ -578,12 +613,12 @@ var modelsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		routerURL := os.Getenv("ZERO_ROUTER_BASE_URL")
 		if routerURL == "" {
-			routerURL = "http://127.0.0.1:20128/v1"
+			routerURL = "https://api.openai.com/v1"
 		}
 		routerClient := sdk.NewClient(routerURL, sdk.Options{})
 		resp, err := routerClient.ListModels(cmd.Context())
 		if err != nil {
-			return fmt.Errorf("list models: %w", err)
+			return fmt.Errorf("list models from %s: %w (set ZERO_ROUTER_BASE_URL / ZERO_ROUTER_API_KEY to point at your provider)", routerURL, err)
 		}
 		fmt.Println()
 		fmt.Println("Models")
@@ -604,9 +639,14 @@ var authCmd = &cobra.Command{
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			fmt.Printf("No auth file at %s\n", configPath)
-			fmt.Println("Provider keys come from environment variables:")
-			fmt.Println("  ZERO_ROUTER_BASE_URL")
+			fmt.Println()
+			fmt.Println("Zero reads its provider URL + API key from environment variables.")
+			fmt.Println("Any OpenAI-compatible endpoint works (OpenAI, OpenRouter, LiteLLM, Ollama, vLLM, llama.cpp, ...).")
+			fmt.Println()
+			fmt.Println("  ZERO_ROUTER_BASE_URL  (default: https://api.openai.com/v1)")
 			fmt.Println("  ZERO_ROUTER_API_KEY")
+			fmt.Println()
+			fmt.Println("Put them in ~/.config/zero/.env or your shell rc, then restart `zero start`.")
 			return nil
 		}
 		fmt.Println(string(data))
@@ -726,37 +766,19 @@ func sendAndStream(sessionID, prompt string) error {
 	return nil
 }
 
-type cliTUIRunner struct{}
-
-func (cliTUIRunner) SendPrompt(ctx context.Context, sessionID, prompt string) (string, error) {
-	return sendPromptWithContext(ctx, sessionID, prompt)
-}
-
-func (cliTUIRunner) NewSession(ctx context.Context) (string, error) {
-	session, err := createTerminalSession(true)
-	if err != nil {
-		return "", err
-	}
-	return session.ID, nil
-}
-
 func runInteractive(cmd *cobra.Command) error {
 	if err := startEmbeddedServer(); err != nil {
 		return err
 	}
 
-	modelFlag, _ := cmd.Flags().GetString("model")
 	continueFlag, _ := cmd.Flags().GetBool("continue")
 	sessionFlag, _ := cmd.Flags().GetString("session")
-	agentFlag, _ := cmd.Flags().GetString("agent")
-	// forkFlag, _ := cmd.Flags().GetBool("fork") // reserved for future use
 
 	var session sdk.Session
 	var err error
 
 	switch {
 	case sessionFlag != "":
-		// Resume specific session by ID
 		client := newSDKClient("")
 		sessions, e := client.ListSessions(context.Background(), "")
 		if e != nil {
@@ -772,7 +794,6 @@ func runInteractive(cmd *cobra.Command) error {
 			return fmt.Errorf("session %q not found", sessionFlag)
 		}
 	case continueFlag:
-		// Continue last session
 		session, err = createTerminalSession(false)
 		if err != nil {
 			return fmt.Errorf("session setup: %w", err)
@@ -784,30 +805,7 @@ func runInteractive(cmd *cobra.Command) error {
 		}
 	}
 
-	model := session.Model
-	if modelFlag != "" {
-		model = modelFlag
-	}
-	agent := session.Agent
-	if agentFlag != "" {
-		agent = agentFlag
-	}
-	_ = agent // reserved for agent routing
-
-	program := tea.NewProgram(tui.NewModel(tui.Config{SessionID: session.ID, Model: model, Runner: cliTUIRunner{}}), tea.WithAltScreen())
-	_, err = program.Run()
-	if isTTYUnavailableError(err) {
-		return runLineInteractive(session.ID)
-	}
-	return err
-}
-
-func isTTYUnavailableError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "could not open a new TTY") || strings.Contains(msg, "/dev/tty")
+	return runLineInteractive(session.ID)
 }
 
 func runLineInteractive(sessionID string) error {

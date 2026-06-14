@@ -7,19 +7,32 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/zero-agent/core/internal/bus"
 )
 
 type Service struct {
-	store *Store
-	bus   *bus.Bus
+	store             *Store
+	bus               *bus.Bus
+	chatHistory       map[string][]ChatMessage
+	chatMu            sync.RWMutex
+	interruptRequests map[string]*InterruptRequest
+	irMu              sync.RWMutex
 }
 
 type PromptExecutor func(ctx context.Context, item *PromptQueueItem) error
 
 func NewService(store *Store, eventBus *bus.Bus) *Service {
-	return &Service{store: store, bus: eventBus}
+	return &Service{
+		store:             store,
+		bus:               eventBus,
+		chatHistory:       make(map[string][]ChatMessage),
+		interruptRequests: make(map[string]*InterruptRequest),
+	}
 }
 
 type CreateRoomInput struct {
@@ -137,6 +150,27 @@ func (s *Service) JoinRoom(ctx context.Context, input JoinRoomInput) (*JoinRoomR
 	}
 
 	s.bus.PublishRoom(EventParticipantJoined, room.ID, room.ProjectID, "", participant)
+
+	joinMsg := &ChatMessage{
+		ID:        uuid.New().String(),
+		RoomID:    room.ID,
+		FromID:    "system",
+		Nickname:  "system",
+		Role:      "guest",
+		Text:      fmt.Sprintf("👋 %s joined the session", participant.DisplayName),
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	s.chatMu.Lock()
+	history := s.chatHistory[room.ID]
+	history = append(history, *joinMsg)
+	if len(history) > 100 {
+		history = history[1:]
+	}
+	s.chatHistory[room.ID] = history
+	s.chatMu.Unlock()
+
+	s.bus.PublishRoom(EventChatMessage, room.ID, room.ProjectID, "", joinMsg)
 
 	return &JoinRoomResult{Room: room, Participant: participant}, nil
 }
@@ -456,4 +490,235 @@ func generateInviteToken() (string, error) {
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
+}
+
+type SendChatInput struct {
+	RoomID        string
+	ActorClientID string
+	Text          string
+}
+
+func (s *Service) SendChatMessage(ctx context.Context, input SendChatInput) (*ChatMessage, error) {
+	trimmed := strings.TrimSpace(input.Text)
+	if trimmed == "" || len(trimmed) > 500 {
+		return nil, fmt.Errorf("chat message must be 1-500 characters")
+	}
+
+	room, err := s.store.GetRoom(ctx, input.RoomID)
+	if err != nil {
+		return nil, err
+	}
+	if room.Status != RoomActive {
+		return nil, ErrRoomRevoked
+	}
+
+	participant, err := s.store.GetParticipant(ctx, input.RoomID, input.ActorClientID)
+	if err != nil {
+		return nil, ErrUnauthorized
+	}
+
+	msg := &ChatMessage{
+		ID:        uuid.New().String(),
+		RoomID:    input.RoomID,
+		FromID:    input.ActorClientID,
+		Nickname:  participant.DisplayName,
+		Role:      string(participant.Role),
+		Text:      trimmed,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	s.chatMu.Lock()
+	history := s.chatHistory[input.RoomID]
+	history = append(history, *msg)
+	if len(history) > 100 {
+		history = history[1:]
+	}
+	s.chatHistory[input.RoomID] = history
+	s.chatMu.Unlock()
+
+	s.bus.PublishRoom(EventChatMessage, room.ID, room.ProjectID, "", msg)
+
+	return msg, nil
+}
+
+func (s *Service) GetChatHistory(ctx context.Context, roomID string) ([]ChatMessage, error) {
+	_, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.chatMu.RLock()
+	history := s.chatHistory[roomID]
+	s.chatMu.RUnlock()
+
+	if history == nil {
+		return []ChatMessage{}, nil
+	}
+
+	result := make([]ChatMessage, len(history))
+	copy(result, history)
+	return result, nil
+}
+
+type InterruptPromptInput struct {
+	RoomID        string
+	SessionID     string
+	ActorClientID string
+	CancelRun     func(sessionID string) bool
+}
+
+type InterruptPromptResult struct {
+	Cancelled         bool              `json:"cancelled"`
+	Pending           bool              `json:"pending,omitempty"`
+	RequestID         string            `json:"requestId,omitempty"`
+	InterruptedActor  string            `json:"interruptedActor,omitempty"`
+	InterruptedNick   string            `json:"interruptedNickname,omitempty"`
+}
+
+func (s *Service) InterruptPrompt(ctx context.Context, input InterruptPromptInput) (*InterruptPromptResult, error) {
+	room, err := s.store.GetRoom(ctx, input.RoomID)
+	if err != nil {
+		return nil, err
+	}
+
+	actor, err := s.store.GetParticipant(ctx, input.RoomID, input.ActorClientID)
+	if err != nil {
+		return nil, ErrUnauthorized
+	}
+
+	var ownerClientID string
+	row := s.store.db.QueryRowContext(ctx,
+		`SELECT actor_client_id FROM session_run_locks WHERE session_id = ?`,
+		input.SessionID)
+	_ = row.Scan(&ownerClientID)
+
+	isHost := input.ActorClientID == room.HostClientID
+	isOwnSession := ownerClientID == "" || ownerClientID == input.ActorClientID
+
+	if isHost || isOwnSession {
+		return s.executeInterrupt(ctx, room, actor, ownerClientID, input)
+	}
+
+	owner, _ := s.store.GetParticipant(ctx, input.RoomID, ownerClientID)
+	ownerNick := ownerClientID
+	if owner != nil {
+		ownerNick = owner.DisplayName
+	}
+
+	req := &InterruptRequest{
+		ID:            uuid.New().String(),
+		RoomID:        input.RoomID,
+		SessionID:     input.SessionID,
+		RequesterID:   input.ActorClientID,
+		RequesterNick: actor.DisplayName,
+		OwnerID:       ownerClientID,
+		OwnerNick:     ownerNick,
+		Status:        "pending",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+
+	s.irMu.Lock()
+	s.interruptRequests[req.ID] = req
+	s.irMu.Unlock()
+
+	s.bus.PublishRoom(EventInterruptRequested, room.ID, room.ProjectID, input.SessionID, req)
+
+	return &InterruptPromptResult{
+		Pending:   true,
+		RequestID: req.ID,
+	}, nil
+}
+
+func (s *Service) executeInterrupt(
+	ctx context.Context,
+	room *Room,
+	actor *Participant,
+	ownerClientID string,
+	input InterruptPromptInput,
+) (*InterruptPromptResult, error) {
+	result := &InterruptPromptResult{}
+
+	if ownerClientID != "" && ownerClientID != input.ActorClientID {
+		if interrupted, getErr := s.store.GetParticipant(ctx, input.RoomID, ownerClientID); getErr == nil {
+			result.InterruptedActor = ownerClientID
+			result.InterruptedNick = interrupted.DisplayName
+		}
+	}
+
+	if input.CancelRun != nil {
+		result.Cancelled = input.CancelRun(input.SessionID)
+	}
+
+	_, _ = s.store.db.ExecContext(ctx,
+		`UPDATE prompt_queue SET status = 'cancelled' WHERE session_id = ? AND status IN ('running', 'queued', 'pending_review')`,
+		input.SessionID)
+
+	_ = s.store.ReleaseSessionLock(ctx, input.SessionID)
+
+	s.bus.PublishRoom(EventPromptInterrupted, room.ID, room.ProjectID, input.SessionID, map[string]string{
+		"sessionId":           input.SessionID,
+		"interruptedBy":       input.ActorClientID,
+		"interruptedByNick":   actor.DisplayName,
+		"interruptedActor":    result.InterruptedActor,
+		"interruptedNickname": result.InterruptedNick,
+	})
+
+	s.bus.Publish("session.status", "", input.SessionID, map[string]string{
+		"status": "cancelled",
+	})
+
+	return result, nil
+}
+
+type ResolveInterruptInput struct {
+	RoomID        string
+	RequestID     string
+	ActorClientID string
+	Approve       bool
+	CancelRun     func(sessionID string) bool
+}
+
+func (s *Service) ResolveInterrupt(ctx context.Context, input ResolveInterruptInput) (*InterruptPromptResult, error) {
+	s.irMu.Lock()
+	req, exists := s.interruptRequests[input.RequestID]
+	if exists {
+		delete(s.interruptRequests, input.RequestID)
+	}
+	s.irMu.Unlock()
+
+	if !exists || req == nil {
+		return nil, fmt.Errorf("interrupt request not found")
+	}
+
+	room, err := s.store.GetRoom(ctx, req.RoomID)
+	if err != nil {
+		return nil, err
+	}
+
+	isOwner := input.ActorClientID == req.OwnerID
+	isHost := input.ActorClientID == room.HostClientID
+	if !isOwner && !isHost {
+		return nil, ErrUnauthorized
+	}
+
+	if !input.Approve {
+		req.Status = "rejected"
+		s.bus.PublishRoom(EventInterruptRejected, room.ID, room.ProjectID, req.SessionID, req)
+		return &InterruptPromptResult{Cancelled: false}, nil
+	}
+
+	req.Status = "approved"
+	s.bus.PublishRoom(EventInterruptApproved, room.ID, room.ProjectID, req.SessionID, req)
+
+	requester, _ := s.store.GetParticipant(ctx, req.RoomID, req.RequesterID)
+	if requester == nil {
+		return nil, ErrUnauthorized
+	}
+
+	return s.executeInterrupt(ctx, room, requester, req.OwnerID, InterruptPromptInput{
+		RoomID:        req.RoomID,
+		SessionID:     req.SessionID,
+		ActorClientID: req.RequesterID,
+		CancelRun:     input.CancelRun,
+	})
 }

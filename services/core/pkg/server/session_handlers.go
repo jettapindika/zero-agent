@@ -28,6 +28,10 @@ func (s *Server) sessionRoutes() chi.Router {
 	r.Post("/sessions/{id}/messages", s.handleCreateMessage)
 	r.Get("/sessions/{id}/messages", s.handleListMessages)
 	r.Delete("/sessions/{id}/messages/{messageId}", s.handleDeleteMessage)
+	r.Post("/sessions/{id}/files", s.handleUploadAttachment)
+	r.Get("/sessions/{id}/files", s.handleListAttachments)
+	r.Get("/sessions/{id}/files/{fileId}", s.handleDownloadAttachment)
+	r.Delete("/sessions/{id}/files/{fileId}", s.handleDeleteAttachment)
 	return r
 }
 

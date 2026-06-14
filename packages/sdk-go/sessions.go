@@ -80,7 +80,8 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	// Try 9router /v1/models via provider base URL fallback
+	// Hits the provider's OpenAI-compatible /models endpoint. Whatever URL
+	// the user configured for ZERO_ROUTER_BASE_URL is what gets queried.
 	err := c.doJSON(ctx, http.MethodGet, "/models", nil, &result)
 	if err != nil {
 		return nil, err

@@ -40,3 +40,10 @@ func DefaultRegistry() *Registry {
 func (r *Registry) Get(name string) Tool {
 	return r.tools[name]
 }
+
+func (r *Registry) Register(t Tool) {
+	if r.tools == nil {
+		r.tools = map[string]Tool{}
+	}
+	r.tools[t.Name()] = t
+}

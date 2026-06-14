@@ -28,6 +28,12 @@ func (s *Server) collabRoutes() chi.Router {
 
 	r.Get("/rooms/{roomId}/events", s.handleRoomSSE)
 
+	r.Post("/rooms/{roomId}/chat", s.handleSendChat)
+	r.Get("/rooms/{roomId}/chat", s.handleGetChatHistory)
+
+	r.Post("/rooms/{roomId}/sessions/{sessionId}/interrupt", s.handleInterruptPrompt)
+	r.Post("/rooms/{roomId}/interrupt-requests/{requestId}/resolve", s.handleResolveInterrupt)
+
 	return r
 }
 
@@ -147,6 +153,46 @@ func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+type resolveInterruptRequest struct {
+	Approve bool `json:"approve"`
+}
+
+func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) {
+	clientID := r.Header.Get("X-Zero-Client-ID")
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, "missing X-Zero-Client-ID header")
+		return
+	}
+
+	requestID := chi.URLParam(r, "requestId")
+
+	var req resolveInterruptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	roomID := chi.URLParam(r, "roomId")
+
+	result, err := s.collab.ResolveInterrupt(r.Context(), collab.ResolveInterruptInput{
+		RoomID:        roomID,
+		RequestID:     requestID,
+		ActorClientID: clientID,
+		Approve:       req.Approve,
+		CancelRun:     s.CancelRun,
+	})
+	if err != nil {
+		switch err {
+		case collab.ErrUnauthorized:
+			writeError(w, http.StatusForbidden, "not authorized")
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
 func (s *Server) handleLeaveRoom(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Header.Get("X-Zero-Client-ID")
 	if clientID == "" {
@@ -455,4 +501,93 @@ func boolDefault(v *bool, def bool) bool {
 		return def
 	}
 	return *v
+}
+
+type sendChatRequest struct {
+	Text string `json:"text"`
+}
+
+func (s *Server) handleSendChat(w http.ResponseWriter, r *http.Request) {
+	clientID := r.Header.Get("X-Zero-Client-ID")
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, "missing X-Zero-Client-ID header")
+		return
+	}
+
+	roomID := chi.URLParam(r, "roomId")
+
+	var req sendChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	msg, err := s.collab.SendChatMessage(r.Context(), collab.SendChatInput{
+		RoomID:        roomID,
+		ActorClientID: clientID,
+		Text:          req.Text,
+	})
+	if err != nil {
+		switch err {
+		case collab.ErrRoomNotFound:
+			writeError(w, http.StatusNotFound, "room not found")
+		case collab.ErrRoomRevoked:
+			writeError(w, http.StatusForbidden, "room is revoked")
+		case collab.ErrUnauthorized:
+			writeError(w, http.StatusForbidden, "not a participant")
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, msg)
+}
+
+func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
+	roomID := chi.URLParam(r, "roomId")
+
+	history, err := s.collab.GetChatHistory(r.Context(), roomID)
+	if err != nil {
+		switch err {
+		case collab.ErrRoomNotFound:
+			writeError(w, http.StatusNotFound, "room not found")
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, history)
+}
+
+func (s *Server) handleInterruptPrompt(w http.ResponseWriter, r *http.Request) {
+	clientID := r.Header.Get("X-Zero-Client-ID")
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, "missing X-Zero-Client-ID header")
+		return
+	}
+
+	roomID := chi.URLParam(r, "roomId")
+	sessionID := chi.URLParam(r, "sessionId")
+
+	result, err := s.collab.InterruptPrompt(r.Context(), collab.InterruptPromptInput{
+		RoomID:        roomID,
+		SessionID:     sessionID,
+		ActorClientID: clientID,
+		CancelRun:     s.CancelRun,
+	})
+	if err != nil {
+		switch err {
+		case collab.ErrRoomNotFound:
+			writeError(w, http.StatusNotFound, "room not found")
+		case collab.ErrUnauthorized:
+			writeError(w, http.StatusForbidden, "not a participant")
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }

@@ -2,14 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { listModels } from '../zero-api';
 
-// Curated fallback used only when the live /providers/models endpoint is
-// unreachable. Always provider/name format so the backend validator accepts.
+// Curated fallback list shown when the live `/providers/models` proxy is
+// unreachable (provider down, no API key set, network blocked). The real
+// model list comes from whatever endpoint the user configured via
+// ZERO_ROUTER_BASE_URL — these are just well-known ids users are likely
+// to recognize so picking one isn't a dead end.
 const FALLBACK_MODELS: ModelEntry[] = [
-  { id: 'cx/gpt-5.5', provider: '9router', label: 'GPT-5.5 (cx)', description: 'Default fast local-router model.' },
-  { id: 'kr/claude-sonnet-4.5', provider: '9router', label: 'Claude Sonnet 4.5 (kr)', description: 'Strong reasoning via 9router.' },
-  { id: 'openai/gpt-4o', provider: 'OpenAI', label: 'GPT-4o' },
-  { id: 'openai/gpt-4o-mini', provider: 'OpenAI', label: 'GPT-4o mini' },
-  { id: 'anthropic/claude-sonnet-4-5', provider: 'Anthropic', label: 'Claude Sonnet 4.5' },
+  { id: 'gpt-4o-mini', provider: 'OpenAI', label: 'GPT-4o mini', description: 'Small, fast, cheap. Good default.' },
+  { id: 'gpt-4o', provider: 'OpenAI', label: 'GPT-4o' },
+  { id: 'gpt-4.1', provider: 'OpenAI', label: 'GPT-4.1' },
+  { id: 'claude-3-5-sonnet-latest', provider: 'Anthropic', label: 'Claude 3.5 Sonnet', description: 'Use via OpenRouter / LiteLLM proxy.' },
+  { id: 'llama3.1', provider: 'Ollama', label: 'Llama 3.1 (local)', description: 'Set ZERO_ROUTER_BASE_URL to your Ollama /v1 endpoint.' },
 ];
 
 type ModelEntry = {
@@ -21,7 +24,12 @@ type ModelEntry = {
 
 function inferProvider(modelId: string): string {
   const slash = modelId.indexOf('/');
-  if (slash <= 0) return 'unknown';
+  if (slash <= 0) {
+    if (modelId.startsWith('gpt-') || modelId.startsWith('o1-') || modelId.startsWith('o3-')) return 'OpenAI';
+    if (modelId.startsWith('claude-')) return 'Anthropic';
+    if (modelId.startsWith('llama') || modelId.startsWith('mistral') || modelId.startsWith('qwen')) return 'Local';
+    return 'provider';
+  }
   const prefix = modelId.slice(0, slash).toLowerCase();
   switch (prefix) {
     case 'openai':
@@ -30,9 +38,10 @@ function inferProvider(modelId: string): string {
       return 'Anthropic';
     case 'ollama':
       return 'Ollama';
-    case 'kr':
-    case 'cx':
-      return '9router';
+    case 'openrouter':
+      return 'OpenRouter';
+    case 'litellm':
+      return 'LiteLLM';
     default:
       return prefix;
   }

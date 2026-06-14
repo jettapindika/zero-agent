@@ -34,8 +34,8 @@ func (p *OpenAI) Name() string {
 }
 
 func (p *OpenAI) ListModels(ctx context.Context) ([]ModelInfo, error) {
-	// 9router exposes a standard OpenAI-style /models endpoint. Hit it live so
-	// the desktop sees whatever the running router actually serves.
+	// Hit the user-configured /models endpoint live so the desktop's Model
+	// Picker reflects whatever the upstream provider actually serves.
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
 	if err != nil {
 		return nil, err

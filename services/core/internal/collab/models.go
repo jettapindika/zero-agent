@@ -71,3 +71,25 @@ type IdempotencyEntry struct {
 	ResultJSON string `json:"resultJson"`
 	CreatedAt  int64  `json:"createdAt"`
 }
+
+type ChatMessage struct {
+	ID          string `json:"id"`
+	RoomID      string `json:"roomId"`
+	FromID      string `json:"fromId"`
+	Nickname    string `json:"nickname"`
+	Role        string `json:"role"`
+	Text        string `json:"text"`
+	Timestamp   string `json:"timestamp"`
+}
+
+type InterruptRequest struct {
+	ID              string `json:"id"`
+	RoomID          string `json:"roomId"`
+	SessionID       string `json:"sessionId"`
+	RequesterID     string `json:"requesterId"`
+	RequesterNick   string `json:"requesterNickname"`
+	OwnerID         string `json:"ownerId"`
+	OwnerNick       string `json:"ownerNickname"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"createdAt"`
+}

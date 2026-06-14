@@ -18,9 +18,11 @@ import (
 	"github.com/zero-agent/core/internal/bus"
 	"github.com/zero-agent/core/internal/collab"
 	"github.com/zero-agent/core/internal/permission"
+	"github.com/zero-agent/core/pkg/identity"
 	"github.com/zero-agent/core/internal/provider"
 	"github.com/zero-agent/core/internal/storage"
 	"github.com/zero-agent/core/internal/tool"
+	"github.com/zero-agent/core/internal/upload"
 )
 
 type Config struct {
@@ -48,6 +50,8 @@ type Server struct {
 	permissions *permission.Manager
 	aiProvider  provider.Provider
 	auth        *auth.Service
+	uploads     *upload.Receiver
+	uploadStore *upload.Store
 	router      chi.Router
 
 	runsMu sync.Mutex
@@ -67,17 +71,24 @@ func NewWithAuth(db *storage.DB, eventBus *bus.Bus, authSvc *auth.Service) *Serv
 	collabStore := collab.NewStore(db.Conn())
 	collabSvc := collab.NewService(collabStore, eventBus)
 
+	// Provider URL + key are user-supplied. Zero is OpenAI-compatible so any
+	// `/v1` endpoint that serves `GET /models` and `POST /chat/completions`
+	// will work (OpenAI, OpenRouter, LiteLLM, Ollama, vLLM, llama.cpp, ...).
+	// Defaults to public OpenAI; users override via env or `~/.config/zero/.env`.
 	routerBaseURL := os.Getenv("ZERO_ROUTER_BASE_URL")
 	if routerBaseURL == "" {
-		routerBaseURL = "http://127.0.0.1:20128/v1"
+		routerBaseURL = "https://api.openai.com/v1"
 	}
 	routerAPIKey := os.Getenv("ZERO_ROUTER_API_KEY")
-	if routerAPIKey == "" {
-		routerAPIKey = "sk_9router"
-	}
 	aiProvider := provider.NewOpenAI(provider.OpenAIConfig{BaseURL: routerBaseURL, APIKey: routerAPIKey})
 	permMgr := permission.NewManager(eventBus)
-	toolExecutor := agent.NewToolExecutor(tool.DefaultRegistry(), permMgr, eventBus)
+
+	uploadStore := upload.NewStore(upload.DefaultRoot())
+	uploadReceiver := upload.NewReceiver(db, uploadStore, eventBus)
+
+	tools := tool.DefaultRegistry()
+	tools.Register(tool.AttachRead(db))
+	toolExecutor := agent.NewToolExecutor(tools, permMgr, eventBus)
 
 	s := &Server{
 		db:          db,
@@ -88,6 +99,8 @@ func NewWithAuth(db *storage.DB, eventBus *bus.Bus, authSvc *auth.Service) *Serv
 		permissions: permMgr,
 		aiProvider:  aiProvider,
 		auth:        authSvc,
+		uploads:     uploadReceiver,
+		uploadStore: uploadStore,
 		runs:        make(map[string]context.CancelFunc),
 	}
 	s.router = s.routes()
@@ -108,6 +121,7 @@ func (s *Server) routes() chi.Router {
 	r.Get("/events", s.handleSSE)
 	r.Get("/openapi.json", s.handleOpenAPI)
 	r.Get("/providers/models", s.handleListModels)
+	r.Get("/identity", s.handleIdentity)
 	r.Post("/projects/ensure", s.handleEnsureProject)
 
 	if s.auth != nil {
@@ -227,6 +241,19 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok"}`)
+}
+
+// handleIdentity returns the local client identity stored at ~/.zero/client.json.
+// The desktop app uses this to populate the X-Zero-Client-ID header on collab
+// endpoints. Auto-generated on first read so a fresh install works without
+// running `zero setup` first.
+func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
+	id, err := identity.Load()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, id)
 }
 
 func (s *Server) handleEnsureProject(w http.ResponseWriter, r *http.Request) {
